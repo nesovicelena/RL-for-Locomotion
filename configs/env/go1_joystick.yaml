@@ -1,0 +1,21 @@
+# Unitree Go1 joystick / velocity-tracking task.
+#
+# `playground_name` selects the registered MuJoCo Playground env; everything
+# under `overrides` is applied on top of that env's default ConfigDict, so we
+# never duplicate upstream defaults and never drift when Playground updates.
+
+name: go1_joystick
+playground_name: Go1JoystickFlatTerrain
+
+overrides:
+  # episode_length: 1000
+  # action_repeat: 1
+  # reward_config:
+  #   scales:
+  #     tracking_lin_vel: 1.5
+  #     tracking_ang_vel: 0.8
+
+domain_randomization:
+  enabled: false
+  # friction: [0.6, 1.4]
+  # added_mass: [-1.0, 1.0]

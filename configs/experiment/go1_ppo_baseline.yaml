@@ -1,0 +1,31 @@
+# One experiment = one file. This is what gets frozen into the run directory,
+# so a plot can always be traced back to the exact settings that produced it.
+#
+#   python scripts/train.py --config configs/experiment/go1_ppo_baseline.yaml
+
+name: go1_ppo_baseline
+description: >
+  Reference PPO run on Go1 flat-terrain joystick. Everything else is compared
+  against this.
+
+env: env/go1_joystick.yaml
+algo: algo/ppo_brax.yaml
+
+# Applied last, on top of the composed env + algo config.
+overrides: {}
+
+seed: 0
+# Repeat the run under several seeds before claiming any result.
+# seeds: [0, 1, 2]
+
+logging:
+  wandb: true
+  tags: [baseline, go1, ppo]
+
+checkpointing:
+  every_n_evals: 1
+  keep_last: 3
+
+eval:
+  render_video: true
+  n_episodes: 5

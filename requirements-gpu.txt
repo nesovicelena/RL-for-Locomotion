@@ -1,0 +1,10 @@
+# RunPod / any CUDA box. This is the file that must be reproducible:
+# once a pod trains successfully, pin every version here with `pip freeze`
+# so a fresh pod six months from now behaves identically.
+#
+#   pip install -r requirements-gpu.txt
+#   pip install -e .
+#
+# Leave unpinned only until the first successful training run.
+
+jax[cuda12]

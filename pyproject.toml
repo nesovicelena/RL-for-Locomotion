@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rl-locomotion"
+version = "0.1.0"
+description = "Reinforcement learning for legged locomotion with MuJoCo Playground"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+
+# Deps that are identical on laptop and pod. JAX is deliberately NOT here:
+# the CPU and CUDA builds differ, see requirements-cpu.txt / requirements-gpu.txt.
+dependencies = [
+    "mujoco",
+    "mujoco-mjx",
+    "playground",
+    "brax",
+    "flax",
+    "orbax-checkpoint",
+    "ml-collections",
+    "pyyaml",
+    "numpy",
+    "pandas",
+    "mediapy",
+    "matplotlib",
+    "tqdm",
+    "wandb",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "jupyterlab",
+    "ipywidgets",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

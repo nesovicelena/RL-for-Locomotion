@@ -1,0 +1,36 @@
+# Experiment outputs — these live on the RunPod persistent volume, not in git.
+experiments/*
+!experiments/.gitkeep
+wandb/
+outputs/
+*.mp4
+*.gif
+
+# Checkpoints
+*.ckpt
+*.msgpack
+checkpoints/
+
+# Scratch notebooks
+notebooks/scratch/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Secrets and local settings
+.env
+*.pem
+
+# OS
+.DS_Store

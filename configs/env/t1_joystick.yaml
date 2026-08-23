@@ -1,0 +1,9 @@
+# Booster T1 humanoid joystick task. See go1_joystick.yaml for the schema.
+
+name: t1_joystick
+playground_name: T1JoystickFlatTerrain
+
+overrides: {}
+
+domain_randomization:
+  enabled: false

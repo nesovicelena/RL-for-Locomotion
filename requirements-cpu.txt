@@ -1,0 +1,9 @@
+# Local development on the laptop: config work, tests, analysis, plotting.
+# No GPU, no serious training. See docs/setup_local.md.
+#
+#   conda env create -f environment.yml
+#   conda activate rl-locomotion
+#   pip install -r requirements-cpu.txt
+#   pip install -e ".[dev]"
+
+jax[cpu]

@@ -1,0 +1,15 @@
+# Local (laptop) conda environment. Python only — the actual packages come from
+# pip, so that the laptop and the pod resolve the same dependency set from
+# pyproject.toml rather than drifting between conda and pip resolvers.
+#
+#   conda env create -f environment.yml
+#   conda activate rl-locomotion
+#   pip install -r requirements-cpu.txt
+#   pip install -e ".[dev]"
+
+name: rl-locomotion
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip

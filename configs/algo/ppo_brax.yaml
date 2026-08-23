@@ -1,0 +1,29 @@
+# Brax PPO. Starting point is the Playground locomotion default; tune from here.
+# num_envs and batch_size are the two knobs to match to the rented GPU's memory.
+
+algo: ppo
+
+num_timesteps: 100_000_000
+num_evals: 10
+episode_length: 1000
+action_repeat: 1
+unroll_length: 20
+
+num_envs: 8192
+batch_size: 256
+num_minibatches: 32
+num_updates_per_batch: 4
+
+learning_rate: 3.0e-4
+entropy_cost: 1.0e-2
+discounting: 0.97
+gae_lambda: 0.95
+clipping_epsilon: 0.2
+max_grad_norm: 1.0
+
+normalize_observations: true
+reward_scaling: 1.0
+
+network:
+  policy_hidden_layer_sizes: [128, 128, 128, 128]
+  value_hidden_layer_sizes: [256, 256, 256, 256, 256]

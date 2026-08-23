@@ -1,0 +1,24 @@
+# Brax SAC. Far more sample-efficient than PPO per step but much slower in
+# wall-clock on MJX, since it cannot exploit the same massive env parallelism.
+# Kept as a baseline for comparison, not as the main workhorse.
+
+algo: sac
+
+num_timesteps: 10_000_000
+num_evals: 10
+episode_length: 1000
+action_repeat: 1
+
+num_envs: 128
+batch_size: 512
+min_replay_size: 10_000
+max_replay_size: 1_000_000
+grad_updates_per_step: 8
+
+learning_rate: 3.0e-4
+discounting: 0.99
+reward_scaling: 1.0
+normalize_observations: true
+
+network:
+  hidden_layer_sizes: [256, 256]
