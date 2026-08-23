@@ -45,7 +45,7 @@ def hero_shot(
     """
 
     model, data = _model_and_data(env, state)
-.
+
     model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
     model.vis.global_.offheight = max(model.vis.global_.offheight, height)
     model.vis.quality.offsamples = samples
@@ -97,6 +97,60 @@ def save_image(frame: np.ndarray, path: str | Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     media.write_image(str(path), frame)
+    return path
+
+
+def robot_lineup(
+    env_names: list[str] | None = None,
+    titles: list[str] | None = None,
+    ncols: int = 3,
+    figsize_per_tile: float = 4.0,
+    width: int = 800,
+    height: int = 640,
+    **kwargs: Any,
+) -> Any:
+    """Every robot in one figure — a grid of hero shots at the reset pose.
+
+    """
+    from mujoco_playground import registry as pg_registry
+
+    from rl_locomotion.eval.render import gallery
+
+    if env_names is None:
+        from rl_locomotion.envs.registry import list_models
+
+        models = [m for m in list_models("locomotion") if m.envs]
+        env_names = [m.envs[0] for m in models]
+        titles = titles or [m.platform for m in models]
+    if not env_names:
+        raise ValueError("nothing to render: `env_names` is empty")
+
+    frames = [
+        hero_shot(pg_registry.load(name), width=width, height=height, **kwargs)
+        for name in env_names
+    ]
+    return gallery(frames, titles or env_names, ncols=ncols,
+                   figsize_per_tile=figsize_per_tile)
+
+
+def save_robot_lineup(
+    path: str | Path,
+    env_names: list[str] | None = None,
+    dpi: int = 200,
+    **kwargs: Any,
+) -> Path:
+    """`robot_lineup` written straight to a file, closed afterwards.
+
+    """
+    import matplotlib.pyplot as plt
+
+    figure = robot_lineup(env_names, **kwargs)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        figure.savefig(path, dpi=dpi, bbox_inches="tight")
+    finally:
+        plt.close(figure)
     return path
 
 
