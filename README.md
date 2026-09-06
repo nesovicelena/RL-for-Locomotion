@@ -37,6 +37,7 @@ committed with its outputs, so it is readable without running anything.
 | `eval/render.py` | video, galleries, reward and action plots |
 | `eval/figures.py` | high-resolution stills for the report |
 | `scripts/view_model.py` | interactive MuJoCo viewer for composing figures |
+| `docs/report/` | LaTeX survey of the locomotion suite — English (9 pp.) and Serbian Cyrillic (10 pp.) |
 
 Training itself (`training/`, `config.py`, `scripts/train.py`) is still stubs.
 
@@ -61,6 +62,16 @@ mjpython scripts/view_model.py Go1JoystickFlatTerrain   # press P for the camera
 ```python
 from rl_locomotion.eval import figures as fig
 fig.save_model_figures(["Go1JoystickFlatTerrain"], out_dir="experiments/figures")
+```
+
+Build the locomotion-suite report:
+
+```bash
+cd docs/report && make          # both editions
+make en                         # -> playground_locomotion.pdf     (English)
+make sr                         # -> playground_lokomocija_sr.pdf  (српски, ћирилица)
+make figures                    # re-render the robot plates first, if needed
+make check-sr                   # catch Latin letters inside Cyrillic words
 ```
 
 ## How this is meant to be used

@@ -1,0 +1,34 @@
+# Blind flat-ground ERFI study on Go1 (Campanaro et al. 2022, Sec. VI-B made quantitative).
+#
+#   python scripts/train.py --config configs/experiment/erfi_study.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study.yaml --plot
+#
+# Every CLI flag overrides the value here. Runs land in <out>/<condition>/seed<k>/
+# and finished runs are skipped, so the sweep can be restarted after a pod dies.
+
+name: erfi_study
+out: erfi_study            # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  num_timesteps: 200_000_000
+  num_evals: 10
+  history_len: 7             # 7 -> paper's 192-dim state; 1 -> Playground's 48-dim
+  policy_layers: [512, 512]  # paper (blind A1)
+  value_layers: [512, 256, 128]
+  symmetric_critic: false    # true = critic sees only the policy state, as in the paper
+  rfi_lim: 7.0               # Nm, ~30% of Go1 hip/thigh torque limit
+  rao_lim: 7.0
+  impl: warp                 # "jax" if Warp fails to compile on the pod
+
+eval:
+  impl: jax                  # perturbed models are traced arguments; keep the JAX backend here
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N, friction, gravity, kp_scale]

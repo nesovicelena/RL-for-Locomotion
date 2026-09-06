@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import importlib
 import io
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
-import importlib
+
 import pandas as pd
 from mujoco_playground import registry
 from mujoco_playground._src import mjx_env

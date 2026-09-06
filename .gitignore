@@ -28,6 +28,16 @@ dist/
 # Jupyter
 .ipynb_checkpoints/
 
+# LaTeX build intermediates. The .tex, the figures and the built PDF are all
+# tracked — the PDF so the report is readable straight from the repo.
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.toc
+*.synctex.gz
+
 # Secrets and local settings
 .env
 *.pem

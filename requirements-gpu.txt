@@ -1,10 +1,18 @@
-# RunPod / any CUDA box. This is the file that must be reproducible:
-# once a pod trains successfully, pin every version here with `pip freeze`
-# so a fresh pod six months from now behaves identically.
+# RunPod / any CUDA 12 box. Pinned to the set that is known to resolve together
+# (same pins as the install cell in notebooks/remote/go1_train.ipynb — keep them in sync).
 #
 #   pip install -r requirements-gpu.txt
 #   pip install -e .
 #
-# Leave unpinned only until the first successful training run.
+# Note: brax 0.14.2 still calls jax.device_put_replicated, which JAX 0.10 removed
+# from the public namespace. The notebook re-exports it from jax._src.api before
+# importing brax; scripts that use brax directly need the same two lines.
 
-jax[cuda12]
+jax[cuda12]==0.10.2
+brax==0.14.2
+playground==0.2.0
+mujoco==3.12.0
+mujoco-mjx==3.12.0
+warp-lang==1.16.0
+flax==0.12.8
+orbax-checkpoint==0.12.4
