@@ -29,6 +29,9 @@ cd "${REPO_DIR}"
 
 echo "==> Installing dependencies"
 pip install --upgrade pip
+# The RunPod PyTorch image ships a few Debian-installed packages (blinker is
+# the usual one) that pip cannot uninstall. Install over them instead.
+pip install --ignore-installed blinker
 pip install -r requirements-gpu.txt
 pip install -e ".[dev]"
 
