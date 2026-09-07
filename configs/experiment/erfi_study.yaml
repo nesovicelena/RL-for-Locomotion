@@ -7,7 +7,7 @@
 # and finished runs are skipped, so the sweep can be restarted after a pod dies.
 
 name: erfi_study
-out: erfi_study            # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+out: erfi_study_l2.5       # relative to RL_EXPERIMENTS_DIR (or ./experiments)
 
 conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
 seeds: [0, 1, 2]
@@ -19,8 +19,13 @@ train:
   policy_layers: [512, 512]  # paper (blind A1)
   value_layers: [512, 256, 128]
   symmetric_critic: false    # true = critic sees only the policy state, as in the paper
-  rfi_lim: 7.0               # Nm, ~30% of Go1 hip/thigh torque limit
-  rao_lim: 7.0
+  # Nm. The paper uses 20 Nm on the 50 kg ANYmal C, roughly half a joint's
+  # stance torque. 2.5 Nm is the equivalent fraction on the 12 kg Go1.
+  # A first sweep at 7.0 Nm left every RAO/ERFI policy standing still for the
+  # full 200 M steps (reward ~17 vs ~28 for the baseline); at 2.5 Nm ERFI-50
+  # reaches ~27. RAO alone stays stuck at ~19 at 1.5, 2.5 and 7.0 Nm.
+  rfi_lim: 2.5
+  rao_lim: 2.5
   impl: warp                 # "jax" if Warp fails to compile on the pod
 
 eval:
