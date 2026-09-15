@@ -24,6 +24,8 @@
 # Knobs (environment variables):
 #   RL_EXPERIMENTS_DIR  output root                       (default: see above)
 #   STUDIES             space-separated config names      (default: all six)
+#   NUM_TIMESTEPS       override the configs' 200M steps per run (e.g. 300000000)
+#   NUM_EVALS           override the configs' 10 evals / checkpoints per run
 #   SMOKE=1             2M-step pipeline check of every study, ~1 min each
 #   STOP_POD=1          run `runpodctl stop pod` when finished (billing!)
 set -uo pipefail
@@ -49,6 +51,13 @@ SMOKE_FLAG=""
 if [ "${SMOKE:-0}" = "1" ]; then
     SMOKE_FLAG="--smoke"
 fi
+TRAIN_FLAGS=""
+if [ -n "${NUM_TIMESTEPS:-}" ]; then
+    TRAIN_FLAGS="${TRAIN_FLAGS} --num-timesteps ${NUM_TIMESTEPS}"
+fi
+if [ -n "${NUM_EVALS:-}" ]; then
+    TRAIN_FLAGS="${TRAIN_FLAGS} --num-evals ${NUM_EVALS}"
+fi
 
 # Provenance: which code produced this tree.
 {
@@ -58,6 +67,7 @@ fi
     echo "host    $(hostname)"
     echo "gpu     $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo none)"
     echo "studies ${STUDIES}"
+    echo "train flags ${TRAIN_FLAGS:-<config defaults>}"
     echo "dirty files:"
     git status --short 2>/dev/null
 } > "${ROOT}/provenance.txt"
@@ -78,7 +88,7 @@ for study in ${STUDIES}; do
 
     t0=$(date +%s)
     note "---- ${study}: train"
-    python scripts/train.py --config "${cfg}" ${SMOKE_FLAG} >> "${log}" 2>&1
+    python scripts/train.py --config "${cfg}" ${TRAIN_FLAGS} ${SMOKE_FLAG} >> "${log}" 2>&1
     rc_train=$?
     if [ ${rc_train} -ne 0 ]; then
         note "FAIL ${study}: train exited ${rc_train} (see ${log})"
