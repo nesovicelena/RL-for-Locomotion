@@ -81,8 +81,10 @@ def eval_env_config(train_env_cfg: Any, impl: str = "jax") -> Any:
     """Training env config -> evaluation env config (ERFI off, no built-in kicks)."""
     cfg = erfi.default_config() if train_env_cfg is None else train_env_cfg
     cfg = cfg.copy_and_resolve_references()
-    if "task" not in cfg:  # runs from before the terrain was part of the config
+    if "task" not in cfg:  # runs from before robot/terrain were part of the config
         cfg.task = "flat_terrain"
+    if "robot" not in cfg:
+        cfg.robot = "go1"
     cfg.erfi.enable = False
     cfg.pert_config.enable = False
     cfg.impl = impl

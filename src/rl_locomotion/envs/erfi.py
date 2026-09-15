@@ -1,4 +1,4 @@
-r"""Extended Random Force Injection (ERFI) on the Go1 joystick task.
+r"""Extended Random Force Injection (ERFI) on the Go1 / A1 joystick task.
 
 Campanaro et al., "Learning and Deploying Robust Locomotion Policies with
 Minimal Dynamics Randomization" (arXiv:2209.12878).
@@ -26,6 +26,11 @@ Observation (paper Sec. VI-B, the blind A1 setup), with H = history_len:
 H = 7 gives the paper's 192 dimensions; H = 1 is Playground's 48-dim state
 reordered. The critic keeps Playground's privileged state so an asymmetric
 critic remains available.
+
+Robots. `cfg.robot` selects the model: "go1" (Playground's Go1JoystickFlatTerrain
+/ RoughTerrain) or "a1" (our port of the same task to Menagerie's Unitree A1,
+the robot of the paper's blind experiment; see envs/a1/). Both share every
+name the task code uses, so the ERFI logic below is robot-agnostic.
 """
 from __future__ import annotations
 
@@ -39,17 +44,24 @@ from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion import register_environment
 from mujoco_playground._src.locomotion.go1 import joystick
 
+from rl_locomotion.envs.a1 import A1Joystick
+
 ENV_NAME = "Go1JoystickERFI"
 MODES = ("rfi", "rao", "erfi_c", "erfi_50")
 
-# Playground scenes for the Go1 joystick task. The terrain is part of the
-# config (`cfg.task`) rather than a constructor argument, so that a run's
+# Playground scenes for the joystick task. The terrain is part of the config
+# (`cfg.task`) rather than a constructor argument, so that a run's
 # env_config.json fully determines the environment and evaluation can never
 # silently rebuild a rough-terrain policy on flat ground.
-#   flat_terrain   plane, floor friction 0.6, keyframe height 0.278 m
+#   flat_terrain   plane, floor friction 0.6, keyframe height 0.278 m (A1: 0.27)
 #   rough_terrain  20 x 20 m heightfield, 5 cm peak-to-peak (std 1.45 cm),
-#                  floor friction 1.0, keyframe height 0.35 m
+#                  floor friction 1.0, keyframe height 0.35 m (A1: 0.34)
 TASKS = ("flat_terrain", "rough_terrain")
+
+# Robot models. Same rule: part of the config, recorded per run.
+#   go1  Unitree Go1, 12.74 kg, limits 23.7 Nm hip/thigh, 35.55 Nm knee
+#   a1   Unitree A1, 12.45 kg, limit 33.5 Nm on all joints (the paper's blind robot)
+ROBOTS = ("go1", "a1")
 
 # The six training conditions of the study. `randomize` toggles Playground's
 # dynamics randomizer (friction, masses, CoM, armature); `mode` the ERFI scheme.
@@ -76,15 +88,17 @@ _JOINT_VEL = slice(21, 33)
 
 def default_config() -> config_dict.ConfigDict:
     cfg = joystick.default_config()
+    cfg.robot = "go1"
     cfg.task = "flat_terrain"
     # Paper: 7-step history of joint position errors and joint velocities.
     cfg.history_len = 7
     cfg.erfi = config_dict.create(
         enable=True,
         mode="erfi_50",
-        # Nm. The paper uses 20-40 Nm on ANYmal C (limit ~80 Nm), i.e. roughly
-        # 25-50% of peak torque. Go1's limits are 23.7 Nm (hip/thigh) and
-        # 35.55 Nm (knee), so the equivalent band is ~6-12 Nm.
+        # Nm. The paper uses 20 Nm on the 50 kg ANYmal C, about half a joint's
+        # stance torque. Go1 and A1 are both ~12.5 kg, so the study uses 2.5 Nm
+        # for both (set by the experiment config; 7.0 here is the historical
+        # default that turned out too large, see the ERFI report).
         rfi_lim=7.0,
         rao_lim=7.0,
     )
@@ -102,6 +116,8 @@ def condition_config(name: str, **overrides: Any) -> config_dict.ConfigDict:
         cfg[k] = v
     if cfg.task not in TASKS:
         raise ValueError(f"task must be one of {TASKS}, got {cfg.task!r}")
+    if cfg.robot not in ROBOTS:
+        raise ValueError(f"robot must be one of {ROBOTS}, got {cfg.robot!r}")
     if cfg.task == "rough_terrain":
         # More contacts against the heightfield than against a plane. Playground
         # uses naconmax 8*8192 and njmax 60; Warp 1.16 overflowed njmax=60 in
@@ -117,18 +133,26 @@ def uses_domain_randomization(name: str) -> bool:
     return CONDITIONS[name]["randomize"]
 
 
-class Go1JoystickERFI(joystick.Joystick):
-    """Go1 joystick with ERFI torque perturbations and a history observation."""
+class _ERFIMixin:
+    """ERFI torque perturbation + history observation, on top of a Go1-style joystick task.
+
+    Must come first in the MRO; the base class is the robot-specific Joystick.
+    """
+
+    ROBOT: str = ""
 
     def __init__(self, task=None, config=None, config_overrides=None):
         cfg = default_config() if config is None else config
-        # The terrain lives in the config. A `task` argument is accepted for
-        # API compatibility with Playground but must agree with `cfg.task`.
+        # The terrain and robot live in the config. A `task` argument is accepted
+        # for API compatibility with Playground but must agree with `cfg.task`.
         cfg_task = cfg.get("task", "flat_terrain")
+        cfg_robot = cfg.get("robot", "go1")
         if task is not None and task != cfg_task:
             raise ValueError(f"task={task!r} disagrees with config.task={cfg_task!r}")
         if cfg_task not in TASKS:
             raise ValueError(f"config.task must be one of {TASKS}, got {cfg_task!r}")
+        if cfg_robot != self.ROBOT:
+            raise ValueError(f"{type(self).__name__} is the {self.ROBOT!r} env; config.robot is {cfg_robot!r}")
         # Playground's Joystick.__init__ overwrites naconmax/njmax for rough
         # terrain with its own (too small) values. Remember ours and restore
         # them afterwards; make_data reads them at reset time, so this is
@@ -149,6 +173,10 @@ class Go1JoystickERFI(joystick.Joystick):
     @property
     def task(self) -> str:
         return self._task
+
+    @property
+    def robot(self) -> str:
+        return self.ROBOT
 
     @property
     def floor_friction(self) -> float:
@@ -262,8 +290,23 @@ class Go1JoystickERFI(joystick.Joystick):
         return state
 
 
+class Go1JoystickERFI(_ERFIMixin, joystick.Joystick):
+    """Unitree Go1 joystick with ERFI torque perturbations and a history observation."""
+
+    ROBOT = "go1"
+
+
+class A1JoystickERFI(_ERFIMixin, A1Joystick):
+    """Unitree A1 joystick with ERFI torque perturbations and a history observation."""
+
+    ROBOT = "a1"
+
+
+ENV_CLASSES = {"go1": Go1JoystickERFI, "a1": A1JoystickERFI}
+
+
 def register() -> None:
-    """Register with Playground's locomotion suite. Idempotent.
+    """Register the Go1 variant with Playground's locomotion suite. Idempotent.
 
     Afterwards `mujoco_playground._src.locomotion.load(ENV_NAME, ...)` works.
     The top-level `mujoco_playground.registry.load` only dispatches names that
@@ -272,17 +315,23 @@ def register() -> None:
     register_environment(ENV_NAME, Go1JoystickERFI, default_config)
 
 
-def load(config: config_dict.ConfigDict | None = None, **config_overrides: Any) -> Go1JoystickERFI:
-    """Build the env directly (no registry lookup needed). Terrain comes from `config.task`."""
-    return Go1JoystickERFI(config=config, config_overrides=config_overrides or None)
+def load(config: config_dict.ConfigDict | None = None, **config_overrides: Any):
+    """Build the env for `config.robot` on `config.task` (no registry lookup needed)."""
+    cfg = default_config() if config is None else config
+    robot = cfg.get("robot", "go1")
+    if robot not in ENV_CLASSES:
+        raise ValueError(f"config.robot must be one of {ROBOTS}, got {robot!r}")
+    return ENV_CLASSES[robot](config=cfg, config_overrides=config_overrides or None)
 
 
-def domain_randomizer(task: str = "flat_terrain"):
+def domain_randomizer(task: str = "flat_terrain", robot: str = "go1"):
     """Playground's Go1 dynamics randomizer; the `dr` condition uses it.
 
-    Playground registers the same function for both terrains. It randomises
-    geom 0's friction, which is the floor in both scenes (verified), so it is
-    safe to use on rough terrain too.
+    Playground registers the same function for both terrains. It works by
+    index (geom 0 = floor, body 1 = trunk, dofs 6: = the 12 joints), and both
+    the Go1 and A1 scenes satisfy that layout (verified in tests), so the same
+    randomizer serves both robots.
     """
+    del robot  # same function for go1 and a1
     name = {"flat_terrain": "Go1JoystickFlatTerrain", "rough_terrain": "Go1JoystickRoughTerrain"}[task]
     return pg_registry.get_domain_randomizer(name)

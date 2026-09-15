@@ -39,7 +39,8 @@ committed with its outputs, so it is readable without running anything.
 | `scripts/view_model.py` | interactive MuJoCo viewer for composing figures |
 | `docs/report/` | LaTeX survey of the locomotion suite — English (9 pp.) and Serbian Cyrillic (10 pp.) |
 
-| `envs/erfi.py` | Go1 joystick task with ERFI torque perturbations; terrain via `cfg.task` (`flat_terrain` / `rough_terrain`) |
+| `envs/erfi.py` | joystick task with ERFI torque perturbations; robot via `cfg.robot` (`go1` / `a1`), terrain via `cfg.task` (`flat_terrain` / `rough_terrain`) |
+| `envs/a1/` | Unitree A1 port of Playground's Go1 joystick task (same names, Menagerie numbers); the paper's blind robot |
 | `training/ppo.py` | Brax PPO wrapper; one self-describing directory per run |
 | `eval/perturb.py` | robustness protocol of Campanaro et al. (payload, push, friction, gravity, Kp) |
 | `scripts/train.py`, `scripts/eval.py` | study entry points, driven by `configs/experiment/*.yaml` |
@@ -61,9 +62,19 @@ python scripts/train.py --config configs/experiment/erfi_study_rough.yaml
 python scripts/eval.py  --config configs/experiment/erfi_study_rough.yaml --plot
 ```
 
-The terrain is stored in each run's `env_config.json`, so evaluation always
-rebuilds the scene the policy was trained on. Run `pytest tests/test_erfi.py`
-(about two minutes on CPU) before sending anything to the pod.
+Unitree A1, the robot of the paper's blind experiment, with the same six
+conditions and protocol:
+
+```bash
+python scripts/train.py --config configs/experiment/erfi_study_a1.yaml         # flat
+python scripts/train.py --config configs/experiment/erfi_study_a1_rough.yaml   # rough
+```
+
+Robot and terrain are stored in each run's `env_config.json`, so evaluation
+always rebuilds the model and scene the policy was trained on. Outputs land in
+separate directories: `erfi_study_l2.5`, `erfi_study_rough_l2.5`,
+`erfi_study_a1_l2.5`, `erfi_study_a1_rough_l2.5`. Run `pytest tests/test_erfi.py tests/test_a1.py`
+(about four minutes on CPU) before sending anything to the pod.
 
 ## Common tasks
 

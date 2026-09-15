@@ -1,7 +1,7 @@
-# Blind ERFI study on Go1, ROUGH terrain (Campanaro et al. 2022, Sec. VI-B on uneven ground).
+# Blind ERFI study on Unitree A1, ROUGH terrain (Campanaro et al. 2022, Sec. VI-B on uneven ground).
 #
-#   python scripts/train.py --config configs/experiment/erfi_study_rough.yaml
-#   python scripts/eval.py  --config configs/experiment/erfi_study_rough.yaml --plot
+#   python scripts/train.py --config configs/experiment/erfi_study_a1_rough.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_a1_rough.yaml --plot
 #
 # Identical to erfi_study.yaml except for `task` and `out`. The rough scene is
 # Playground's Go1JoystickRoughTerrain: a 20 x 20 m heightfield with 5 cm
@@ -12,14 +12,14 @@
 # the friction sweep below is centred on 1.0 here rather than 0.6. Everything
 # else in the protocol is terrain-independent.
 
-name: erfi_study_rough
-out: erfi_study_rough_l2.5    # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+name: erfi_study_a1_rough
+out: erfi_study_a1_rough_l2.5    # relative to RL_EXPERIMENTS_DIR (or ./experiments)
 
 conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
 seeds: [0, 1, 2]
 
 train:
-  robot: go1
+  robot: a1
   task: rough_terrain
   num_timesteps: 200_000_000
   num_evals: 10

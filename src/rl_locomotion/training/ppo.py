@@ -54,8 +54,10 @@ class TrainSpec:
 
     condition: str  # one of erfi.CONDITIONS
     seed: int = 0
-    # Terrain: "flat_terrain" or "rough_terrain". Stored in env_config.json so
-    # evaluation rebuilds the same scene.
+    # Robot ("go1" or "a1") and terrain ("flat_terrain" or "rough_terrain").
+    # Both are stored in env_config.json so evaluation rebuilds the same model
+    # on the same scene.
+    robot: str = "go1"
     task: str = "flat_terrain"
     num_timesteps: int = 200_000_000
     num_evals: int = 10
@@ -81,6 +83,8 @@ class TrainSpec:
             raise ValueError(f"unknown condition {self.condition!r}; choose from {list(erfi.CONDITIONS)}")
         if self.task not in erfi.TASKS:
             raise ValueError(f"unknown task {self.task!r}; choose from {list(erfi.TASKS)}")
+        if self.robot not in erfi.ROBOTS:
+            raise ValueError(f"unknown robot {self.robot!r}; choose from {list(erfi.ROBOTS)}")
         self.policy_layers = tuple(self.policy_layers)
         self.value_layers = tuple(self.value_layers)
 
@@ -94,7 +98,9 @@ def _set_dotted(cfg: config_dict.ConfigDict, key: str, value: Any) -> None:
 
 
 def env_config(spec: TrainSpec) -> config_dict.ConfigDict:
-    cfg = erfi.condition_config(spec.condition, task=spec.task, impl=spec.impl, history_len=spec.history_len)
+    cfg = erfi.condition_config(
+        spec.condition, robot=spec.robot, task=spec.task, impl=spec.impl, history_len=spec.history_len
+    )
     cfg.erfi.rfi_lim = spec.rfi_lim
     cfg.erfi.rao_lim = spec.rao_lim
     for k, v in spec.env_overrides.items():
@@ -145,7 +151,9 @@ def train(
 
     env = erfi.load(env_cfg)
     eval_env = erfi.load(env_cfg)
-    randomizer = erfi.domain_randomizer(spec.task) if erfi.uses_domain_randomization(spec.condition) else None
+    randomizer = (
+        erfi.domain_randomizer(spec.task, spec.robot) if erfi.uses_domain_randomization(spec.condition) else None
+    )
 
     curve: list[dict[str, float]] = []
     t0 = time.time()
@@ -191,6 +199,7 @@ def train(
     summary = {
         "condition": spec.condition,
         "seed": spec.seed,
+        "robot": spec.robot,
         "task": spec.task,
         "wall_s": time.time() - t0,
         "final_reward": curve[-1]["reward"] if curve else None,
@@ -207,9 +216,11 @@ def is_finished(run_dir: Path | str) -> bool:
 def load_env_config(run_dir: Path | str, **overrides: Any) -> config_dict.ConfigDict:
     """The env config a run was trained with, as a ConfigDict, with optional overrides."""
     cfg = config_dict.ConfigDict(json.loads((Path(run_dir) / "env_config.json").read_text()))
-    # Runs from before the terrain became part of the config were all flat.
+    # Runs from before robot/terrain became part of the config were all Go1 on flat ground.
     if "task" not in cfg:
         cfg.task = "flat_terrain"
+    if "robot" not in cfg:
+        cfg.robot = "go1"
     for k, v in overrides.items():
         _set_dotted(cfg, k, v)
     return cfg

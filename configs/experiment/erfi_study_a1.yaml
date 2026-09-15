@@ -1,19 +1,21 @@
-# Blind flat-ground ERFI study on Go1 (Campanaro et al. 2022, Sec. VI-B made quantitative).
+# Blind flat-ground ERFI study on Unitree A1: the paper's own blind robot (Campanaro et al.
+# 2022, Sec. VI-B). Same protocol as the Go1 study; only the model differs (see envs/a1/).
 #
-#   python scripts/train.py --config configs/experiment/erfi_study.yaml
-#   python scripts/eval.py  --config configs/experiment/erfi_study.yaml --plot
+#   python scripts/train.py --config configs/experiment/erfi_study_a1.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_a1.yaml --plot
 #
 # Every CLI flag overrides the value here. Runs land in <out>/<condition>/seed<k>/
 # and finished runs are skipped, so the sweep can be restarted after a pod dies.
 
-name: erfi_study
-out: erfi_study_l2.5       # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+name: erfi_study_a1
+out: erfi_study_a1_l2.5       # relative to RL_EXPERIMENTS_DIR (or ./experiments)
 
 conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
 seeds: [0, 1, 2]
 
 train:
-  robot: go1
+  robot: a1
+  task: flat_terrain
   num_timesteps: 200_000_000
   num_evals: 10
   history_len: 7             # 7 -> paper's 192-dim state; 1 -> Playground's 48-dim
