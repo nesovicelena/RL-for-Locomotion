@@ -95,6 +95,13 @@ def default_config() -> config_dict.ConfigDict:
     cfg.erfi = config_dict.create(
         enable=True,
         mode="erfi_50",
+        # v2 recipe: append the episode's RAO offset (12) and the RFI flag (1)
+        # to the critic's privileged state (123 -> 136). The policy input is
+        # untouched. Lets the asymmetric critic explain return variance caused
+        # by the hidden per-episode offset, which otherwise makes the advantage
+        # of "start walking" noisy and stalls RAO/ERFI runs in the standing
+        # optimum. v1 studies were trained with False.
+        critic_sees_offset=False,
         # Nm. The paper uses 20 Nm on the 50 kg ANYmal C, about half a joint's
         # stance torque. Go1 and A1 are both ~12.5 kg, so the study uses 2.5 Nm
         # for both (set by the experiment config; 7.0 here is the historical
@@ -235,7 +242,15 @@ class _ERFIMixin:
             info["last_act"],
             info["command"],
         ])
-        return {"state": state, "privileged_state": obs["privileged_state"]}
+        privileged = obs["privileged_state"]
+        if self._config.erfi.get("critic_sees_offset", False):
+            # Zeros on the very first call from reset(); reset() recomputes the
+            # observation once the episode's offset has been drawn.
+            nu = self.mjx_model.nu
+            offset = info.get("erfi_offset", jp.zeros(nu))
+            use_rfi = info.get("erfi_use_rfi", jp.zeros(()))
+            privileged = jp.hstack([privileged, offset, jp.reshape(use_rfi, (1,))])
+        return {"state": state, "privileged_state": privileged}
 
     # ----------------------------------------------------------- reset/step
 
@@ -247,6 +262,11 @@ class _ERFIMixin:
             tau_o, use_rfi = jp.zeros_like(tau_o), jp.zeros(())
         state.info["erfi_offset"] = tau_o
         state.info["erfi_use_rfi"] = use_rfi
+        if self._config.erfi.get("critic_sees_offset", False):
+            # The history is already filled with the current reading, so the
+            # roll inside _get_obs leaves it unchanged; only the critic's extra
+            # entries change.
+            state = state.replace(obs=self._get_obs(state.data, state.info))
         return state
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:

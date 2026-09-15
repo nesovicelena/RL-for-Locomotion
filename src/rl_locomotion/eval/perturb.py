@@ -85,6 +85,8 @@ def eval_env_config(train_env_cfg: Any, impl: str = "jax") -> Any:
         cfg.task = "flat_terrain"
     if "robot" not in cfg:
         cfg.robot = "go1"
+    if "critic_sees_offset" not in cfg.erfi:  # v1 runs predate the v2 recipe
+        cfg.erfi.critic_sees_offset = False
     cfg.erfi.enable = False
     cfg.pert_config.enable = False
     cfg.impl = impl

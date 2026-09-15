@@ -70,6 +70,14 @@ python scripts/train.py --config configs/experiment/erfi_study_a1.yaml         #
 python scripts/train.py --config configs/experiment/erfi_study_a1_rough.yaml   # rough
 ```
 
+v2 training recipe (same conditions and protocol; `tracking_sigma` 0.1 instead of
+0.25 and the critic sees the ERFI offset), kept separate from the v1 runs:
+
+```bash
+python scripts/train.py --config configs/experiment/erfi_study_v2.yaml         # -> erfi_study_v2_l2.5
+python scripts/train.py --config configs/experiment/erfi_study_v2_rough.yaml   # -> erfi_study_v2_rough_l2.5
+```
+
 Robot and terrain are stored in each run's `env_config.json`, so evaluation
 always rebuilds the model and scene the policy was trained on. Outputs land in
 separate directories: `erfi_study_l2.5`, `erfi_study_rough_l2.5`,

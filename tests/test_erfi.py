@@ -147,3 +147,49 @@ def test_eval_config_keeps_the_terrain():
     assert env.task == "rough_terrain"
     assert perturb.nominal_value(env, "friction") == pytest.approx(1.0)
     assert perturb.nominal_value(_env("none"), "friction") == pytest.approx(0.6)
+
+
+# ------------------------------------------------------------------- v2 recipe
+
+def test_v1_default_is_unchanged():
+    env = _env("erfi_50")
+    assert not env._config.erfi.critic_sees_offset
+    assert env.observation_size == {"state": (192,), "privileged_state": (123,)}
+
+
+def test_v2_critic_sees_offset_but_actor_does_not():
+    cfg = erfi.condition_config("rao", impl="jax")
+    cfg.erfi.critic_sees_offset = True
+    env = erfi.load(cfg)
+    assert env.observation_size == {"state": (192,), "privileged_state": (136,)}
+    state = jax.jit(env.reset)(jax.random.PRNGKey(3))
+    # the critic's extra entries equal the episode's offset, from the very first observation
+    assert jp.allclose(state.obs["privileged_state"][123:135], state.info["erfi_offset"])
+    assert float(state.obs["privileged_state"][135]) == 0.0  # rao: RFI channel off
+    assert bool(jp.any(state.info["erfi_offset"] != 0))
+    # ... and stay in sync after a step
+    state = jax.jit(env.step)(state, ZERO)
+    assert jp.allclose(state.obs["privileged_state"][123:135], state.info["erfi_offset"])
+    assert state.obs["state"].shape == (192,)
+
+
+def test_v2_zero_extras_when_erfi_disabled():
+    cfg = erfi.condition_config("none", impl="jax")
+    cfg.erfi.critic_sees_offset = True
+    env = erfi.load(cfg)
+    state = _run(env, 3)
+    assert bool(jp.all(state.obs["privileged_state"][123:] == 0))
+
+
+def test_v2_config_applies_overrides():
+    import yaml
+    from pathlib import Path
+    from rl_locomotion.training import ppo
+
+    c = yaml.safe_load(Path("configs/experiment/erfi_study_v2_rough.yaml").read_text())
+    spec = ppo.TrainSpec(condition="erfi_c", seed=0, **c["train"])
+    cfg = ppo.env_config(spec)
+    assert cfg.reward_config.tracking_sigma == 0.1
+    assert cfg.erfi.critic_sees_offset is True
+    assert (cfg.robot, cfg.task) == ("go1", "rough_terrain")
+    assert c["out"] == "erfi_study_v2_rough_l2.5"

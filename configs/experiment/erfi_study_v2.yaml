@@ -1,0 +1,52 @@
+# v2 training recipe: same six conditions, seeds, budget and protocol as v1, two changes
+# that only affect learning, not the deployed policy:
+#   1. reward_config.tracking_sigma 0.25 -> 0.1: standing still at a 0.5 m/s command earns
+#      exp(-1/0.4)=0.08 of the tracking reward instead of 0.37, so the "stand and collect
+#      ~19 per episode" optimum that trapped most v1 rough runs drops to ~13.
+#   2. erfi.critic_sees_offset: the asymmetric critic also sees the episode's RAO offset
+#      and RFI flag (privileged state 123 -> 136). The actor input is unchanged (192).
+# v1 results stay in erfi_study_l2.5 / erfi_study_rough_l2.5 and are not touched.
+#
+# Blind flat-ground ERFI study on Go1 (Campanaro et al. 2022, Sec. VI-B made quantitative).
+#
+#   python scripts/train.py --config configs/experiment/erfi_study_v2.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_v2.yaml --plot
+#
+# Every CLI flag overrides the value here. Runs land in <out>/<condition>/seed<k>/
+# and finished runs are skipped, so the sweep can be restarted after a pod dies.
+
+name: erfi_study_v2
+out: erfi_study_v2_l2.5       # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  robot: go1
+  num_timesteps: 200_000_000
+  num_evals: 10
+  history_len: 7             # 7 -> paper's 192-dim state; 1 -> Playground's 48-dim
+  policy_layers: [512, 512]  # paper (blind A1)
+  value_layers: [512, 256, 128]
+  symmetric_critic: false    # true = critic sees only the policy state, as in the paper
+  # Nm. The paper uses 20 Nm on the 50 kg ANYmal C, roughly half a joint's
+  # stance torque. 2.5 Nm is the equivalent fraction on the 12 kg Go1.
+  # A first sweep at 7.0 Nm left every RAO/ERFI policy standing still for the
+  # full 200 M steps (reward ~17 vs ~28 for the baseline); at 2.5 Nm ERFI-50
+  # reaches ~27. RAO alone stays stuck at ~19 at 1.5, 2.5 and 7.0 Nm.
+  rfi_lim: 2.5
+  rao_lim: 2.5
+  impl: warp                 # "jax" if Warp fails to compile on the pod
+  env_overrides:
+    reward_config.tracking_sigma: 0.1
+    erfi.critic_sees_offset: true
+
+eval:
+  impl: jax                  # perturbed models are traced arguments; keep the JAX backend here
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N, friction, gravity, kp_scale]

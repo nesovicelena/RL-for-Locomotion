@@ -221,6 +221,8 @@ def load_env_config(run_dir: Path | str, **overrides: Any) -> config_dict.Config
         cfg.task = "flat_terrain"
     if "robot" not in cfg:
         cfg.robot = "go1"
+    if "critic_sees_offset" not in cfg.erfi:  # v1 runs predate the v2 recipe
+        cfg.erfi.critic_sees_offset = False
     for k, v in overrides.items():
         _set_dotted(cfg, k, v)
     return cfg
