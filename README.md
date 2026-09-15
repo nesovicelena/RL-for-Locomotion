@@ -78,6 +78,15 @@ python scripts/train.py --config configs/experiment/erfi_study_v2.yaml         #
 python scripts/train.py --config configs/experiment/erfi_study_v2_rough.yaml   # -> erfi_study_v2_rough_l2.5
 ```
 
+Terrain curriculum (recipe 3): four stages of 50 M steps at 0 / 1.5 / 3 / 5 cm relief,
+each initialised from the previous; the run root gets the last stage's policy so
+`eval.py` works unchanged:
+
+```bash
+python scripts/train_curriculum.py --config configs/experiment/erfi_study_curr.yaml   # -> erfi_study_curr_l2.5
+python scripts/eval.py             --config configs/experiment/erfi_study_curr.yaml --plot
+```
+
 Robot and terrain are stored in each run's `env_config.json`, so evaluation
 always rebuilds the model and scene the policy was trained on. Outputs land in
 separate directories: `erfi_study_l2.5`, `erfi_study_rough_l2.5`,

@@ -39,6 +39,7 @@ from typing import Any
 import jax
 import jax.numpy as jp
 from ml_collections import config_dict
+from mujoco import mjx
 from mujoco_playground import registry as pg_registry
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion import register_environment
@@ -90,6 +91,11 @@ def default_config() -> config_dict.ConfigDict:
     cfg = joystick.default_config()
     cfg.robot = "go1"
     cfg.task = "flat_terrain"
+    # Peak-to-peak relief of the rough-terrain heightfield in metres. Playground's
+    # scene is 0.05; the terrain curriculum trains stages at 0, 0.015, 0.03, 0.05.
+    # Ignored on flat_terrain. Applied by rescaling hfield_size[2] after the
+    # model is built, so the same heightfield shape is used at every amplitude.
+    cfg.terrain_amplitude = 0.05
     # Paper: 7-step history of joint position errors and joint velocities.
     cfg.history_len = 7
     cfg.erfi = config_dict.create(
@@ -169,6 +175,14 @@ class _ERFIMixin:
         self._config.naconmax = max(self._config.naconmax, wanted_naconmax)
         self._config.njmax = max(self._config.njmax, wanted_njmax)
         self._task = cfg_task
+        amp = float(self._config.get("terrain_amplitude", 0.05))
+        if cfg_task == "rough_terrain" and abs(amp - float(self._mj_model.hfield_size[0, 2])) > 1e-9:
+            if amp < 0:
+                raise ValueError("terrain_amplitude must be >= 0")
+            # hfield_size = (radius_x, radius_y, elevation, base_depth); heights
+            # are stored normalised to [0, 1] and scaled by the elevation.
+            self._mj_model.hfield_size[0, 2] = amp
+            self._mjx_model = mjx.put_model(self._mj_model, impl=self._config.impl)
         mode = self._config.erfi.mode
         if mode not in MODES:
             raise ValueError(f"erfi.mode must be one of {MODES}, got {mode!r}")
@@ -184,6 +198,13 @@ class _ERFIMixin:
     @property
     def robot(self) -> str:
         return self.ROBOT
+
+    @property
+    def terrain_amplitude(self) -> float:
+        """Peak-to-peak relief of the heightfield in metres (0.0 on flat terrain)."""
+        if self._task != "rough_terrain":
+            return 0.0
+        return float(self._mj_model.hfield_size[0, 2])
 
     @property
     def floor_friction(self) -> float:

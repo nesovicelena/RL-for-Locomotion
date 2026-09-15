@@ -59,6 +59,12 @@ class TrainSpec:
     # on the same scene.
     robot: str = "go1"
     task: str = "flat_terrain"
+    # Heightfield relief in metres on rough_terrain (Playground: 0.05). Used by
+    # the terrain curriculum; ignored on flat_terrain.
+    terrain_amplitude: float = 0.05
+    # Run directory whose params_final (normaliser, actor, critic) initialise
+    # this run. Network and observation shapes must match. None = from scratch.
+    init_from: str | None = None
     num_timesteps: int = 200_000_000
     num_evals: int = 10
     # Observation / network. Defaults follow the paper's blind A1 setup:
@@ -99,7 +105,8 @@ def _set_dotted(cfg: config_dict.ConfigDict, key: str, value: Any) -> None:
 
 def env_config(spec: TrainSpec) -> config_dict.ConfigDict:
     cfg = erfi.condition_config(
-        spec.condition, robot=spec.robot, task=spec.task, impl=spec.impl, history_len=spec.history_len
+        spec.condition, robot=spec.robot, task=spec.task, impl=spec.impl, history_len=spec.history_len,
+        terrain_amplitude=spec.terrain_amplitude,
     )
     cfg.erfi.rfi_lim = spec.rfi_lim
     cfg.erfi.rao_lim = spec.rao_lim
@@ -183,8 +190,18 @@ def train(
     training_params = dict(params)
     del training_params["network_factory"]
 
+    restore_params = None
+    if spec.init_from is not None:
+        src = Path(spec.init_from)
+        if not (src / "params_final").exists():
+            raise FileNotFoundError(f"init_from run has no params_final: {src}")
+        # (normaliser state, actor params, critic params), exactly what Brax returns.
+        restore_params = brax_model.load_params(str(src / "params_final"))
+        print(f"[{spec.condition} seed={spec.seed}] initialised from {src}", flush=True)
+
     make_inference_fn, ps, metrics = ppo.train(
         **training_params,
+        restore_params=restore_params,
         network_factory=_network_factory(params),
         randomization_fn=randomizer,
         progress_fn=_progress,
@@ -201,6 +218,8 @@ def train(
         "seed": spec.seed,
         "robot": spec.robot,
         "task": spec.task,
+        "terrain_amplitude": spec.terrain_amplitude,
+        "init_from": spec.init_from,
         "wall_s": time.time() - t0,
         "final_reward": curve[-1]["reward"] if curve else None,
         "num_timesteps": spec.num_timesteps,
@@ -223,6 +242,8 @@ def load_env_config(run_dir: Path | str, **overrides: Any) -> config_dict.Config
         cfg.robot = "go1"
     if "critic_sees_offset" not in cfg.erfi:  # v1 runs predate the v2 recipe
         cfg.erfi.critic_sees_offset = False
+    if "terrain_amplitude" not in cfg:  # runs predating the curriculum used Playground's 0.05
+        cfg.terrain_amplitude = 0.05
     for k, v in overrides.items():
         _set_dotted(cfg, k, v)
     return cfg

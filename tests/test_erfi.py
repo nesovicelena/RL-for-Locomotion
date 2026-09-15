@@ -5,6 +5,9 @@ minute of JIT time. Run them before pushing anything the pod will train with.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import jax
 import jax.numpy as jp
 import pytest
@@ -193,3 +196,56 @@ def test_v2_config_applies_overrides():
     assert cfg.erfi.critic_sees_offset is True
     assert (cfg.robot, cfg.task) == ("go1", "rough_terrain")
     assert c["out"] == "erfi_study_v2_rough_l2.5"
+
+
+# ------------------------------------------------------------ terrain curriculum
+
+def test_terrain_amplitude_rescales_the_heightfield():
+    from rl_locomotion.envs.terrain import height_map
+
+    for amp in (0.0, 0.015, 0.05):
+        env = _env("none", task="rough_terrain", terrain_amplitude=amp)
+        assert env.terrain_amplitude == pytest.approx(amp)
+        assert height_map(env.mj_model).peak_to_peak == pytest.approx(amp, abs=1e-6)
+        assert float(env.mjx_model.hfield_size[0, 2]) == pytest.approx(amp)
+    # flat terrain ignores it
+    assert _env("none", task="flat_terrain", terrain_amplitude=0.03).terrain_amplitude == 0.0
+    with pytest.raises(ValueError):
+        _env("none", task="rough_terrain", terrain_amplitude=-0.01)
+
+
+def test_curriculum_spec_and_config():
+    import yaml
+    from pathlib import Path
+    from rl_locomotion.training import ppo
+
+    c = yaml.safe_load(Path("configs/experiment/erfi_study_curr.yaml").read_text())
+    amps = [s["terrain_amplitude"] for s in c["stages"]]
+    assert amps == [0.0, 0.015, 0.03, 0.05]
+    assert sum(s["num_timesteps"] for s in c["stages"]) == 200_000_000
+    spec = ppo.TrainSpec(condition="rao", seed=1, terrain_amplitude=0.015, init_from="/nonexistent",
+                         num_timesteps=1, **c["train"])
+    cfg = ppo.env_config(spec)
+    assert cfg.terrain_amplitude == 0.015 and cfg.task == "rough_terrain"
+    with pytest.raises(FileNotFoundError):
+        ppo.train(spec, Path("/tmp/erfi_curr_should_not_train"))
+
+
+@pytest.mark.skipif(not (Path(__file__).resolve().parents[1] / "experiments/erfi_study_l2.5/none/seed0/params_final").exists(),
+                    reason="needs a finished v1 run to restore from")
+def test_restore_from_run_trains(tmp_path):
+    """Tiny PPO run initialised from a v1 policy: exercises the init_from path end to end."""
+    from rl_locomotion.training import ppo
+
+    src = Path(__file__).resolve().parents[1] / "experiments/erfi_study_l2.5/none/seed0"
+    spec = ppo.TrainSpec(
+        condition="none", seed=0, task="rough_terrain", terrain_amplitude=0.0, init_from=str(src),
+        impl="jax", num_timesteps=512, num_evals=2,
+        ppo_overrides=dict(num_envs=4, batch_size=4, num_minibatches=2, unroll_length=8,
+                           episode_length=32, num_resets_per_eval=1, num_eval_envs=4),
+    )
+    out = ppo.train(spec, tmp_path / "run")
+    assert (tmp_path / "run" / "params_final").exists()
+    assert json.loads((tmp_path / "run" / "summary.json").read_text())["init_from"] == str(src)
+    # a restored (walking) policy scores far above a fresh random one even on a tiny eval
+    assert out["curve"][0]["reward"] > 0.2
