@@ -7,12 +7,15 @@ rescaled here to Go1's 12.7 kg (ANYmal C: ~50 kg, 27 kg base):
 
     payload_kg   extra mass on the trunk           paper: base 22-65 kg (nominal 27)
     push_N       horizontal force on the trunk, 3 s paper: 0-150 N
-    friction     floor friction coefficient         paper: 0.2-0.8 (training 0.5; ours 0.6)
+    friction     floor friction coefficient         paper: 0.2-0.8 (training 0.5;
+                                                    ours 0.6 flat / 1.0 rough)
     gravity      m/s^2                              paper: -18 .. -2
     kp_scale     PD position gain multiplier        paper: hardware test at Kp/3
 
 ERFI is switched off at evaluation, as in the paper (deployment uses the plain
-PD controller). Episodes are batched with vmap and stepped with lax.scan, and
+PD controller). The terrain is whatever the run was trained on (`cfg.task`);
+the trained floor friction is read from the model rather than assumed, so the
+friction sweep's "training" marker is correct on both scenes. Episodes are batched with vmap and stepped with lax.scan, and
 the perturbed MJX model is a traced argument, so one compile per policy covers
 every parameter level.
 """
@@ -30,7 +33,9 @@ from rl_locomotion.envs import erfi
 
 PolicyFn = Callable[[Any, jax.Array], tuple[jax.Array, Any]]
 
-# parameter -> (levels, value during training)
+# parameter -> (default levels, value during training). The friction training
+# value depends on the scene and is resolved per env by `nominal_value`; the
+# 0.6 here is the flat-terrain default kept for backwards compatibility.
 PROTOCOL: dict[str, tuple[list[float], float]] = {
     "payload_kg": ([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 0.0),
     "push_N": ([0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0], 0.0),
@@ -38,6 +43,15 @@ PROTOCOL: dict[str, tuple[list[float], float]] = {
     "gravity": ([-2.0, -5.0, -7.0, -9.81, -12.0, -15.0, -18.0], -9.81),
     "kp_scale": ([0.33, 0.5, 0.75, 1.0, 1.25, 1.5], 1.0),
 }
+
+
+def nominal_value(env: Any, param: str) -> float:
+    """The value of `param` the policy was trained with, read from the env where it can be."""
+    if param == "friction":
+        return float(env.mj_model.geom_friction[env._floor_geom_id, 0])
+    if param == "gravity":
+        return float(env.mj_model.opt.gravity[2])
+    return PROTOCOL[param][1]
 
 LABELS = {
     "payload_kg": "payload on trunk (kg)",
@@ -67,6 +81,8 @@ def eval_env_config(train_env_cfg: Any, impl: str = "jax") -> Any:
     """Training env config -> evaluation env config (ERFI off, no built-in kicks)."""
     cfg = erfi.default_config() if train_env_cfg is None else train_env_cfg
     cfg = cfg.copy_and_resolve_references()
+    if "task" not in cfg:  # runs from before the terrain was part of the config
+        cfg.task = "flat_terrain"
     cfg.erfi.enable = False
     cfg.pert_config.enable = False
     cfg.impl = impl
@@ -177,15 +193,19 @@ def evaluate_policy(
     keys = jax.random.split(jax.random.PRNGKey(seed), spec.n_episodes)
 
     rows = []
+    task = getattr(env, "task", "flat_terrain")
     for param in spec.params:
+        nominal = nominal_value(env, param)
         for level in spec.levels_for(param):
             model = perturbed_model(env, param, level)
             push = jp.asarray(level if param == "push_N" else 0.0, dtype=jp.float32)
             out = jax.device_get(run(model, keys, push))
             row = {
                 **(meta or {}),
+                "task": task,
                 "param": param,
                 "level": level,
+                "nominal": nominal,
                 "success_rate": float(np.mean(out["success"])),
                 "fall_rate": float(np.mean(out["fallen"])),
                 "progress_m": float(np.mean(out["progress_m"])),
@@ -254,7 +274,7 @@ def plot_success_curves(
                 label=CONDITION_NAMES[cond],
             )
             ax.fill_between(mean.index, lo.values, hi.values, color=color, alpha=0.12, lw=0)
-        nominal = PROTOCOL[param][1]
+        nominal = float(sub["nominal"].iloc[0]) if "nominal" in sub else PROTOCOL[param][1]
         ax.axvline(nominal, color="#888888", lw=1, ls="--")
         ax.text(nominal, 1.03, "training", color="#666666", fontsize=8, ha="center", va="bottom")
         ax.set_ylim(-0.02, 1.02)

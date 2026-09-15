@@ -42,6 +42,15 @@ from mujoco_playground._src.locomotion.go1 import joystick
 ENV_NAME = "Go1JoystickERFI"
 MODES = ("rfi", "rao", "erfi_c", "erfi_50")
 
+# Playground scenes for the Go1 joystick task. The terrain is part of the
+# config (`cfg.task`) rather than a constructor argument, so that a run's
+# env_config.json fully determines the environment and evaluation can never
+# silently rebuild a rough-terrain policy on flat ground.
+#   flat_terrain   plane, floor friction 0.6, keyframe height 0.278 m
+#   rough_terrain  20 x 20 m heightfield, 5 cm peak-to-peak (std 1.45 cm),
+#                  floor friction 1.0, keyframe height 0.35 m
+TASKS = ("flat_terrain", "rough_terrain")
+
 # The six training conditions of the study. `randomize` toggles Playground's
 # dynamics randomizer (friction, masses, CoM, armature); `mode` the ERFI scheme.
 CONDITIONS: dict[str, dict[str, Any]] = {
@@ -67,6 +76,7 @@ _JOINT_VEL = slice(21, 33)
 
 def default_config() -> config_dict.ConfigDict:
     cfg = joystick.default_config()
+    cfg.task = "flat_terrain"
     # Paper: 7-step history of joint position errors and joint velocities.
     cfg.history_len = 7
     cfg.erfi = config_dict.create(
@@ -90,6 +100,14 @@ def condition_config(name: str, **overrides: Any) -> config_dict.ConfigDict:
     cfg.erfi.mode = CONDITIONS[name]["mode"]
     for k, v in overrides.items():
         cfg[k] = v
+    if cfg.task not in TASKS:
+        raise ValueError(f"task must be one of {TASKS}, got {cfg.task!r}")
+    if cfg.task == "rough_terrain":
+        # Playground's Joystick.__init__ raises these for rough terrain (more
+        # contacts against the heightfield). Set them here too so the dumped
+        # env_config.json shows what the env actually ran with.
+        cfg.naconmax = 8 * 8192
+        cfg.njmax = 12 + 48
     return cfg
 
 
@@ -100,12 +118,17 @@ def uses_domain_randomization(name: str) -> bool:
 class Go1JoystickERFI(joystick.Joystick):
     """Go1 joystick with ERFI torque perturbations and a history observation."""
 
-    def __init__(self, task="flat_terrain", config=None, config_overrides=None):
-        super().__init__(
-            task=task,
-            config=default_config() if config is None else config,
-            config_overrides=config_overrides,
-        )
+    def __init__(self, task=None, config=None, config_overrides=None):
+        cfg = default_config() if config is None else config
+        # The terrain lives in the config. A `task` argument is accepted for
+        # API compatibility with Playground but must agree with `cfg.task`.
+        cfg_task = cfg.get("task", "flat_terrain")
+        if task is not None and task != cfg_task:
+            raise ValueError(f"task={task!r} disagrees with config.task={cfg_task!r}")
+        if cfg_task not in TASKS:
+            raise ValueError(f"config.task must be one of {TASKS}, got {cfg_task!r}")
+        super().__init__(task=cfg_task, config=cfg, config_overrides=config_overrides)
+        self._task = cfg_task
         mode = self._config.erfi.mode
         if mode not in MODES:
             raise ValueError(f"erfi.mode must be one of {MODES}, got {mode!r}")
@@ -113,6 +136,15 @@ class Go1JoystickERFI(joystick.Joystick):
             raise ValueError("history_len must be >= 1")
         # Joint DOFs sit after the 6 free-base DOFs.
         self._joint_dof_start = self.mjx_model.nv - self.mjx_model.nu
+
+    @property
+    def task(self) -> str:
+        return self._task
+
+    @property
+    def floor_friction(self) -> float:
+        """Sliding friction of the floor geom as trained (0.6 flat, 1.0 rough)."""
+        return float(self.mj_model.geom_friction[self._floor_geom_id, 0])
 
     # ------------------------------------------------------------------ ERFI
 
@@ -232,10 +264,16 @@ def register() -> None:
 
 
 def load(config: config_dict.ConfigDict | None = None, **config_overrides: Any) -> Go1JoystickERFI:
-    """Build the env directly (no registry lookup needed)."""
+    """Build the env directly (no registry lookup needed). Terrain comes from `config.task`."""
     return Go1JoystickERFI(config=config, config_overrides=config_overrides or None)
 
 
-def domain_randomizer():
-    """Playground's Go1 dynamics randomizer; the `dr` condition uses it."""
-    return pg_registry.get_domain_randomizer("Go1JoystickFlatTerrain")
+def domain_randomizer(task: str = "flat_terrain"):
+    """Playground's Go1 dynamics randomizer; the `dr` condition uses it.
+
+    Playground registers the same function for both terrains. It randomises
+    geom 0's friction, which is the floor in both scenes (verified), so it is
+    safe to use on rough terrain too.
+    """
+    name = {"flat_terrain": "Go1JoystickFlatTerrain", "rough_terrain": "Go1JoystickRoughTerrain"}[task]
+    return pg_registry.get_domain_randomizer(name)

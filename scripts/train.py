@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--conditions", nargs="+", choices=list(erfi.CONDITIONS))
     p.add_argument("--seeds", nargs="+", type=int)
     p.add_argument("--out", help="run root; relative paths are under RL_EXPERIMENTS_DIR")
+    p.add_argument("--task", choices=list(erfi.TASKS), help="terrain; overrides train.task in the config")
     p.add_argument("--num-timesteps", type=int)
     p.add_argument("--num-evals", type=int)
     p.add_argument("--history-len", type=int)
@@ -60,7 +61,7 @@ def main() -> None:
     cfg = yaml.safe_load(Path(args.config).read_text())
     train_cfg = dict(cfg.get("train", {}))
 
-    for key in ("num_timesteps", "num_evals", "history_len", "policy_layers", "value_layers",
+    for key in ("task", "num_timesteps", "num_evals", "history_len", "policy_layers", "value_layers",
                 "symmetric_critic", "rfi_lim", "rao_lim", "impl"):
         val = getattr(args, key)
         if val is not None:
@@ -77,7 +78,7 @@ def main() -> None:
         out = out.with_name(out.name + "_smoke")
 
     print(f"runs -> {out}")
-    print(f"conditions {conditions}  seeds {seeds}")
+    print(f"task {train_cfg.get('task', 'flat_terrain')}  conditions {conditions}  seeds {seeds}")
     for condition in conditions:
         for seed in seeds:
             run_dir = out / condition / f"seed{seed}"

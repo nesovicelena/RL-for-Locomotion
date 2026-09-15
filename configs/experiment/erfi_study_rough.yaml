@@ -1,0 +1,45 @@
+# Blind ERFI study on Go1, ROUGH terrain (Campanaro et al. 2022, Sec. VI-B on uneven ground).
+#
+#   python scripts/train.py --config configs/experiment/erfi_study_rough.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_rough.yaml --plot
+#
+# Identical to erfi_study.yaml except for `task` and `out`. The rough scene is
+# Playground's Go1JoystickRoughTerrain: a 20 x 20 m heightfield with 5 cm
+# peak-to-peak relief (std 1.45 cm), floor friction 1.0 (flat: 0.6), spawn
+# height 0.35 m. Playground raises naconmax/njmax automatically for it.
+#
+# The evaluation protocol reads the trained floor friction from the model, so
+# the friction sweep below is centred on 1.0 here rather than 0.6. Everything
+# else in the protocol is terrain-independent.
+
+name: erfi_study_rough
+out: erfi_study_rough_l2.5    # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  task: rough_terrain
+  num_timesteps: 200_000_000
+  num_evals: 10
+  history_len: 7
+  policy_layers: [512, 512]
+  value_layers: [512, 256, 128]
+  symmetric_critic: false
+  rfi_lim: 2.5
+  rao_lim: 2.5
+  impl: warp
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N, friction, gravity, kp_scale]
+  # Friction levels for the rough scene (trained at 1.0). Omit to use the
+  # flat-terrain default list 0.2 .. 0.8.
+  levels:
+    friction: [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]
