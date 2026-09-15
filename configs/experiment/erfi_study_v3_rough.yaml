@@ -1,0 +1,41 @@
+# v3 recipe on rough terrain: v2 plus the paper's joint-position history
+# (q* - q, see erfi_study_v3.yaml). Same six conditions and protocol as
+# erfi_study_rough.yaml.
+#
+#   python scripts/train.py --config configs/experiment/erfi_study_v3_rough.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_v3_rough.yaml --plot
+
+name: erfi_study_v3_rough
+out: erfi_study_v3_rough_l2.5    # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  robot: go1
+  task: rough_terrain
+  num_timesteps: 200_000_000
+  num_evals: 10
+  history_len: 7
+  policy_layers: [512, 512]
+  value_layers: [512, 256, 128]
+  symmetric_critic: false
+  rfi_lim: 2.5
+  rao_lim: 2.5
+  impl: warp
+  env_overrides:
+    reward_config.tracking_sigma: 0.1
+    erfi.critic_sees_offset: true
+    history_target_error: true
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N, friction, gravity, kp_scale]
+  levels:
+    friction: [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]
