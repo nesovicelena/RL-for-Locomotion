@@ -27,6 +27,10 @@ H = 7 gives the paper's 192 dimensions; H = 1 is Playground's 48-dim state
 reordered. The critic keeps Playground's privileged state so an asymmetric
 critic remains available.
 
+The joint-position history holds q - q_default by default (Playground's
+entry; what v1 and v2 were trained with). With `cfg.history_target_error`
+it holds the paper's tracking error q* - q instead.
+
 Robots. `cfg.robot` selects the model: "go1" (Playground's Go1JoystickFlatTerrain
 / RoughTerrain) or "a1" (our port of the same task to Menagerie's Unitree A1,
 the robot of the paper's blind experiment; see envs/a1/). Both share every
@@ -98,6 +102,14 @@ def default_config() -> config_dict.ConfigDict:
     cfg.terrain_amplitude = 0.05
     # Paper: 7-step history of joint position errors and joint velocities.
     cfg.history_len = 7
+    # What the joint-position history holds.
+    #   False  q - q_default, Playground's state entry (v1 and v2 runs).
+    #   True   q* - q, the paper's tracking error, with q* the target the PD
+    #          controller is holding when the observation is taken
+    #          (q_default + action * action_scale of the action applied in
+    #          this step; at reset the target is the keyframe pose).
+    # Changes the policy input, so it is a new recipe, not a drop-in change.
+    cfg.history_target_error = False
     cfg.erfi = config_dict.create(
         enable=True,
         mode="erfi_50",
@@ -243,6 +255,13 @@ class _ERFIMixin:
         obs = super()._get_obs(data, info)
         pg = obs["state"]
         joint_pos, joint_vel = pg[_JOINT_POS], pg[_JOINT_VEL]
+        if self._config.get("history_target_error", False):
+            # q* - q = (q_default + a * scale) - q = a * scale - (q - q_default).
+            # `applied_act` is the action of the step being observed; zeros at
+            # reset, where ctrl is the keyframe pose.
+            nu = self.mjx_model.nu
+            applied = info.get("applied_act", jp.zeros(nu))
+            joint_pos = applied * self._config.action_scale - joint_pos
 
         H = self._config.history_len
         if "joint_pos_hist" not in info:  # first call, from reset()
@@ -278,6 +297,9 @@ class _ERFIMixin:
     def reset(self, rng: jax.Array) -> mjx_env.State:
         rng, key = jax.random.split(rng)
         state = super().reset(rng)
+        # Present from reset on, so the state pytree has the same structure
+        # after reset and after step (lax.scan and the auto-reset need that).
+        state.info["applied_act"] = jp.zeros(self.mjx_model.nu)
         tau_o, use_rfi = self._sample_erfi(key)
         if not self._config.erfi.enable:
             tau_o, use_rfi = jp.zeros_like(tau_o), jp.zeros(())
@@ -301,6 +323,10 @@ class _ERFIMixin:
             tau = state.info["erfi_offset"] + tau_r * state.info["erfi_use_rfi"]
             qfrc = jp.zeros(self.mjx_model.nv).at[self._joint_dof_start :].set(tau)
             state = state.replace(data=state.data.replace(qfrc_applied=qfrc))
+
+        # The parent computes the observation before it records `last_act`, so
+        # expose the action whose target the PD controller holds right now.
+        state.info["applied_act"] = action
 
         # qfrc_applied persists across the substeps inside mjx_env.step, so the
         # parent's step applies tau for the whole control interval.

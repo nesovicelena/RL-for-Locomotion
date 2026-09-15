@@ -157,7 +157,14 @@ def train(
     _dump(run_dir / "ppo_config.json", params)
 
     env = erfi.load(env_cfg)
-    eval_env = erfi.load(env_cfg)
+    # The training curve measures the plain PD controller, as at deployment and
+    # in the perturbation protocol. With ERFI left on here, curves of different
+    # conditions are evaluated under different perturbations and cannot be
+    # compared. Observation shapes are unchanged (the critic's offset entries
+    # are simply zero), so checkpoints load either way.
+    eval_cfg = env_cfg.copy_and_resolve_references()
+    eval_cfg.erfi.enable = False
+    eval_env = erfi.load(eval_cfg)
     randomizer = (
         erfi.domain_randomizer(spec.task, spec.robot) if erfi.uses_domain_randomization(spec.condition) else None
     )
@@ -171,6 +178,10 @@ def train(
             "reward": float(metrics["eval/episode_reward"]),
             "reward_std": float(metrics["eval/episode_reward_std"]),
             "wall_s": time.time() - t0,
+            # Everything else Brax reports: training/{policy,v,entropy}_loss,
+            # training/sps, eval/episode_length, the per-term eval/episode_reward/*.
+            # Needed to tell a stalled seed from a collapsed one after the fact.
+            **{k: float(v) for k, v in metrics.items() if k not in ("eval/episode_reward", "eval/episode_reward_std")},
         }
         curve.append(row)
         _dump(run_dir / "curve.json", curve)
@@ -209,7 +220,14 @@ def train(
         seed=spec.seed,
         environment=env,
         eval_env=eval_env,
-        wrap_env_fn=wrapper.wrap_for_brax_training,
+        # full_reset: call env.reset() on done instead of restoring a cached
+        # first state while keeping `info`. The cached variant left the previous
+        # episode's fallen-pose readings in the history for history_len - 1
+        # steps after every reset, and never redrew the RAO offset at the
+        # time-limit boundary (the env only sees the fall flag; the episode
+        # wrapper sets the truncation done afterwards). Costs one extra
+        # mjx.forward per step.
+        wrap_env_fn=functools.partial(wrapper.wrap_for_brax_training, full_reset=True),
     )
 
     brax_model.save_params(str(run_dir / "params_final"), ps)

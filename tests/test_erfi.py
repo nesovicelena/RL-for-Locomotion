@@ -74,6 +74,69 @@ def test_rao_offset_is_redrawn_on_done():
     assert not bool(jp.allclose(state.info["erfi_offset"], before))
 
 
+def test_training_wrapper_resets_history_and_offset_on_done():
+    """Through the training wrappers, a fall must leave a clean history and a new RAO offset.
+
+    Playground's default auto-reset restores data/obs to a cached first state
+    but keeps `info`, which left the previous episode's fallen-pose readings in
+    the history for history_len - 1 steps. Training uses full_reset=True.
+    """
+    import functools
+    from mujoco_playground import wrapper
+
+    env = _env("rao")
+    H = env._config.history_len
+    wrapped = functools.partial(wrapper.wrap_for_brax_training, full_reset=True)(
+        env, episode_length=1000, action_repeat=1
+    )
+    keys = jax.random.split(jax.random.PRNGKey(0), 2)
+    state = jax.jit(wrapped.reset)(keys)
+    step = jax.jit(wrapped.step)
+    act = jp.zeros((2, 12))
+    for _ in range(3):
+        state = step(state, act)
+    offset_before = state.info["erfi_offset"][0]
+    # flip env 0 upside down so it terminates on the next step, with the joints
+    # far from the default pose so a stale history is visible
+    qpos = state.data.qpos.at[0, 3:7].set(jp.array([0.0, 1.0, 0.0, 0.0])).at[0, 7:].set(0.0)
+    state = step(state.replace(data=state.data.replace(qpos=qpos)), act)
+    assert float(state.done[0]) == 1.0 and float(state.done[1]) == 0.0
+    state = step(state, act)  # first step of the new episode
+    hist = state.obs["state"][0, 9 : 9 + 12 * H].reshape(H, 12)
+    assert bool(jp.all(jp.abs(hist - hist[0]) < 0.1)), "history still holds the previous episode"
+    assert not bool(jp.allclose(state.info["erfi_offset"][0], offset_before))
+
+
+def test_history_target_error_is_q_star_minus_q():
+    cfg = erfi.condition_config("none", impl="jax")
+    cfg.history_target_error = True
+    cfg.noise_config.level = 0.0  # exact comparison
+    env = erfi.load(cfg)
+    default = env._default_pose
+    scale = cfg.action_scale
+    reset = jax.jit(env.reset)
+    step = jax.jit(env.step)
+    state = reset(jax.random.PRNGKey(0))
+    assert state.obs["state"].shape == (192,)
+    # same pytree structure after reset and step (needed by scan / auto-reset)
+    tree = jax.tree_util.tree_structure
+    act = jp.linspace(-0.5, 0.5, 12)
+    nxt = step(state, act)
+    assert tree(state) == tree(nxt)
+    # at reset the target is the keyframe pose: error = q_default - q
+    hist0 = state.obs["state"][9 : 9 + 12 * 7].reshape(7, 12)
+    assert jp.allclose(hist0[0], default - state.data.qpos[7:], atol=1e-5)
+    # after a step the newest slot is (q_default + a * scale) - q for the action just applied
+    hist1 = nxt.obs["state"][9 : 9 + 12 * 7].reshape(7, 12)
+    assert jp.allclose(hist1[0], default + act * scale - nxt.data.qpos[7:], atol=1e-5)
+    assert jp.allclose(hist1[1], hist0[0])
+    # default recipe unchanged: q - q_default
+    plain_cfg = erfi.condition_config("none", impl="jax")
+    plain_cfg.noise_config.level = 0.0
+    s = jax.jit(erfi.load(plain_cfg).reset)(jax.random.PRNGKey(0))
+    assert jp.allclose(s.obs["state"][9:21], s.data.qpos[7:] - default, atol=1e-5)
+
+
 def test_perturbed_models():
     env = _env("none")
     m = env.mjx_model
