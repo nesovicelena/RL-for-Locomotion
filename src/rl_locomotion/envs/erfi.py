@@ -103,11 +103,13 @@ def condition_config(name: str, **overrides: Any) -> config_dict.ConfigDict:
     if cfg.task not in TASKS:
         raise ValueError(f"task must be one of {TASKS}, got {cfg.task!r}")
     if cfg.task == "rough_terrain":
-        # Playground's Joystick.__init__ raises these for rough terrain (more
-        # contacts against the heightfield). Set them here too so the dumped
-        # env_config.json shows what the env actually ran with.
+        # More contacts against the heightfield than against a plane. Playground
+        # uses naconmax 8*8192 and njmax 60; Warp 1.16 overflowed njmax=60 in
+        # training ("nefc overflow - please increase njmax to 64"), and an
+        # overflow silently drops constraint rows, so use a wide margin. The
+        # extra rows cost a little memory, not correctness.
         cfg.naconmax = 8 * 8192
-        cfg.njmax = 12 + 48
+        cfg.njmax = 128
     return cfg
 
 
@@ -127,7 +129,14 @@ class Go1JoystickERFI(joystick.Joystick):
             raise ValueError(f"task={task!r} disagrees with config.task={cfg_task!r}")
         if cfg_task not in TASKS:
             raise ValueError(f"config.task must be one of {TASKS}, got {cfg_task!r}")
+        # Playground's Joystick.__init__ overwrites naconmax/njmax for rough
+        # terrain with its own (too small) values. Remember ours and restore
+        # them afterwards; make_data reads them at reset time, so this is
+        # enough. Never lower what Playground asked for.
+        wanted_naconmax, wanted_njmax = cfg.naconmax, cfg.njmax
         super().__init__(task=cfg_task, config=cfg, config_overrides=config_overrides)
+        self._config.naconmax = max(self._config.naconmax, wanted_naconmax)
+        self._config.njmax = max(self._config.njmax, wanted_njmax)
         self._task = cfg_task
         mode = self._config.erfi.mode
         if mode not in MODES:

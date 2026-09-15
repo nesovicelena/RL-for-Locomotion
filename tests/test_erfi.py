@@ -107,7 +107,7 @@ def test_task_is_part_of_the_config():
     assert flat.task == "flat_terrain" and rough.task == "rough_terrain"
     # contact limits recorded in the config match what Playground uses for the scene
     assert (flat.naconmax, flat.njmax) == (4 * 8192, 40)
-    assert (rough.naconmax, rough.njmax) == (8 * 8192, 60)
+    assert (rough.naconmax, rough.njmax) == (8 * 8192, 128)
     with pytest.raises(ValueError):
         erfi.condition_config("none", task="stairs")
 

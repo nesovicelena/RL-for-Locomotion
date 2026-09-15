@@ -39,7 +39,31 @@ committed with its outputs, so it is readable without running anything.
 | `scripts/view_model.py` | interactive MuJoCo viewer for composing figures |
 | `docs/report/` | LaTeX survey of the locomotion suite — English (9 pp.) and Serbian Cyrillic (10 pp.) |
 
-Training itself (`training/`, `config.py`, `scripts/train.py`) is still stubs.
+| `envs/erfi.py` | Go1 joystick task with ERFI torque perturbations; terrain via `cfg.task` (`flat_terrain` / `rough_terrain`) |
+| `training/ppo.py` | Brax PPO wrapper; one self-describing directory per run |
+| `eval/perturb.py` | robustness protocol of Campanaro et al. (payload, push, friction, gravity, Kp) |
+| `scripts/train.py`, `scripts/eval.py` | study entry points, driven by `configs/experiment/*.yaml` |
+
+## ERFI study
+
+Flat terrain (done, results in `experiments/erfi_study_l2.5`):
+
+```bash
+python scripts/train.py --config configs/experiment/erfi_study.yaml
+python scripts/eval.py  --config configs/experiment/erfi_study.yaml --plot
+```
+
+Rough terrain (same six conditions, Playground's 20 x 20 m heightfield, floor
+friction 1.0 instead of 0.6):
+
+```bash
+python scripts/train.py --config configs/experiment/erfi_study_rough.yaml
+python scripts/eval.py  --config configs/experiment/erfi_study_rough.yaml --plot
+```
+
+The terrain is stored in each run's `env_config.json`, so evaluation always
+rebuilds the scene the policy was trained on. Run `pytest tests/test_erfi.py`
+(about two minutes on CPU) before sending anything to the pod.
 
 ## Common tasks
 
