@@ -97,3 +97,53 @@ def test_protocol_runs_batched():
     assert df["success_rate"].between(0, 1).all()
     # standing still for 0.4 s cannot cover 2.5 m
     assert (df["success_rate"] == 0).all()
+
+
+# ------------------------------------------------------------- rough terrain
+
+def test_task_is_part_of_the_config():
+    flat = erfi.condition_config("none")
+    rough = erfi.condition_config("none", task="rough_terrain")
+    assert flat.task == "flat_terrain" and rough.task == "rough_terrain"
+    # contact limits recorded in the config match what Playground uses for the scene
+    assert (flat.naconmax, flat.njmax) == (4 * 8192, 40)
+    assert (rough.naconmax, rough.njmax) == (8 * 8192, 60)
+    with pytest.raises(ValueError):
+        erfi.condition_config("none", task="stairs")
+
+
+def test_rough_terrain_builds_a_different_scene():
+    flat = _env("none")
+    rough = _env("none", task="rough_terrain")
+    assert flat.task == "flat_terrain" and rough.task == "rough_terrain"
+    # heightfield floor vs plane, and the two scenes' floor friction differ
+    assert int(rough.mj_model.geom_type[rough._floor_geom_id]) == 1  # mjGEOM_HFIELD
+    assert int(flat.mj_model.geom_type[flat._floor_geom_id]) == 0  # mjGEOM_PLANE
+    assert flat.floor_friction == pytest.approx(0.6)
+    assert rough.floor_friction == pytest.approx(1.0)
+    # same robot, same interfaces
+    assert rough.observation_size == flat.observation_size
+    assert rough.action_size == flat.action_size
+
+
+def test_task_argument_must_agree_with_config():
+    cfg = erfi.condition_config("none", task="rough_terrain")
+    with pytest.raises(ValueError):
+        erfi.Go1JoystickERFI(task="flat_terrain", config=cfg)
+
+
+def test_rough_terrain_steps_and_perturbs():
+    env = _env("erfi_50", task="rough_terrain")
+    state = _run(env, 5)
+    assert state.obs["state"].shape == (192,)
+    assert bool(jp.all(state.data.qfrc_applied == 0))
+
+
+def test_eval_config_keeps_the_terrain():
+    cfg = perturb.eval_env_config(erfi.condition_config("rfi", task="rough_terrain"), impl="jax")
+    assert cfg.task == "rough_terrain"
+    assert not cfg.erfi.enable
+    env = erfi.load(cfg)
+    assert env.task == "rough_terrain"
+    assert perturb.nominal_value(env, "friction") == pytest.approx(1.0)
+    assert perturb.nominal_value(_env("none"), "friction") == pytest.approx(0.6)
