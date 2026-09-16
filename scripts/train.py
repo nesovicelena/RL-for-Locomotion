@@ -48,8 +48,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--policy-layers", type=int, nargs="+")
     p.add_argument("--value-layers", type=int, nargs="+")
     p.add_argument("--symmetric-critic", action=argparse.BooleanOptionalAction, default=None)
-    p.add_argument("--rfi-lim", type=float)
-    p.add_argument("--rao-lim", type=float)
+    p.add_argument("--rfi-lim", type=float, nargs="+", help="Nm; one value, or one per joint")
+    p.add_argument("--rao-lim", type=float, nargs="+", help="Nm; one value, or one per joint")
     p.add_argument("--impl", choices=["warp", "jax"])
     p.add_argument("--smoke", action="store_true",
                    help="2M steps, 2 evals, 512 envs: checks the pipeline end to end")
@@ -66,6 +66,8 @@ def main() -> None:
                 "symmetric_critic", "rfi_lim", "rao_lim", "impl"):
         val = getattr(args, key)
         if val is not None:
+            if key in ("rfi_lim", "rao_lim") and len(val) == 1:
+                val = val[0]
             train_cfg[key] = val
 
     conditions = args.conditions or cfg["conditions"]

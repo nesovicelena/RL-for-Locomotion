@@ -1,0 +1,64 @@
+# ERFI study on the Berkeley Humanoid, rough terrain (the primary humanoid study).
+# Design: docs/humanoid_design.md. Recipe: v3 (paper's q* - q history, critic
+# sees the RAO offset) on Playground's humanoid joystick task with its built-in
+# velocity pushes switched off in every condition.
+#
+#   python scripts/train.py --config configs/experiment/erfi_study_bh_rough.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_bh_rough.yaml --plot
+#
+# Torque limits are per joint, in the model's actuator order
+#   LL_HR LL_HAA LL_HFE LL_KFE LL_FFE LL_FAA  LR_HR LR_HAA LR_HFE LR_KFE LR_FFE LR_FAA
+# The values below are PROVISIONAL: 10 % of each joint's actuator-force clamp
+# (jnt_actfrcrange), the rule that gave Go1 its 2.5 Nm. They are for the smoke
+# and timing runs only. The study's vector is 0.5 x the per-joint RMS actuator
+# force of the best walking `none` policy, written here by
+#   python scripts/measure_stance_torque.py <run_dir> --write configs/experiment/erfi_study_bh_rough.yaml
+# and then confirmed by the 50 M sweep at 0.25 / 0.5 / 1.0 of that vector.
+
+name: erfi_study_bh_rough
+out: erfi_study_bh_rough        # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  robot: bh
+  task: rough_terrain
+  num_timesteps: 200_000_000
+  num_evals: 10
+  history_len: 7               # 7 -> 196-dim policy input (192 + the task's 4-dim gait clock)
+  policy_layers: [512, 512]    # paper (blind A1)
+  value_layers: [512, 256, 128]
+  symmetric_critic: false
+  rfi_lim: [2.0, 2.0, 3.0, 3.0, 2.0, 0.5, 2.0, 2.0, 3.0, 3.0, 2.0, 0.5]   # PROVISIONAL, see above
+  rao_lim: [2.0, 2.0, 3.0, 3.0, 2.0, 0.5, 2.0, 2.0, 3.0, 3.0, 2.0, 0.5]   # PROVISIONAL, see above
+  impl: warp
+  env_overrides:
+    erfi.critic_sees_offset: true
+    history_target_error: true
+    # reward_config.tracking_sigma stays at Playground's 0.5 (design 4.5)
+    # push_config.enable is already false in the ERFI default config (design 4.6)
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  # Random-direction push replaced by the two named axes (design 2.4).
+  params: [payload_kg, push_N_sagittal, push_N_lateral, friction, gravity, kp_scale]
+  # Payload as a fraction of the 16.06 kg total mass (up to 20 %), pushes as a
+  # fraction of the weight m g = 157.5 N (up to 0.32, the paper's 150 N on ANYmal C).
+  level_fractions:
+    payload_kg: [0.0, 0.025, 0.05, 0.075, 0.10, 0.15, 0.20]
+    push_N_sagittal: [0.0, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24, 0.32]
+    push_N_lateral: [0.0, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24, 0.32]
+  levels:
+    friction: [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]   # rough scene trains at 1.0
+  # Base below half the 0.56 m spawn height counts as a fall (kneeling is not a termination).
+  low_base_fraction: 0.5
+  # Start each protocol episode from the keyframe pose at rest (paper: same position every time);
+  # Playground's reset otherwise scales the joints by U(0.5, 1.5) and kicks the base.
+  nominal_reset: true

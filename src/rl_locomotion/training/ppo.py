@@ -54,7 +54,7 @@ class TrainSpec:
 
     condition: str  # one of erfi.CONDITIONS
     seed: int = 0
-    # Robot ("go1" or "a1") and terrain ("flat_terrain" or "rough_terrain").
+    # Robot ("go1", "a1" or "bh") and terrain ("flat_terrain" or "rough_terrain").
     # Both are stored in env_config.json so evaluation rebuilds the same model
     # on the same scene.
     robot: str = "go1"
@@ -76,9 +76,10 @@ class TrainSpec:
     # asymmetric critic on the privileged state, which trains more reliably;
     # the deployed policy is identical either way.
     symmetric_critic: bool = False
-    # ERFI torque limits (Nm) and MJX backend.
-    rfi_lim: float = 7.0
-    rao_lim: float = 7.0
+    # ERFI torque limits (Nm): one number for every joint, or one per joint
+    # (the humanoid; see scripts/measure_stance_torque.py). MJX backend.
+    rfi_lim: float | list[float] = 7.0
+    rao_lim: float | list[float] = 7.0
     impl: str = "warp"
     # Free-form overrides applied last (dotted keys allowed, e.g. "noise_config.level").
     env_overrides: dict[str, Any] = field(default_factory=dict)
@@ -93,6 +94,9 @@ class TrainSpec:
             raise ValueError(f"unknown robot {self.robot!r}; choose from {list(erfi.ROBOTS)}")
         self.policy_layers = tuple(self.policy_layers)
         self.value_layers = tuple(self.value_layers)
+        for name in ("rfi_lim", "rao_lim"):
+            v = getattr(self, name)
+            setattr(self, name, [float(x) for x in v] if isinstance(v, (list, tuple)) else float(v))
 
 
 def _set_dotted(cfg: config_dict.ConfigDict, key: str, value: Any) -> None:
@@ -108,16 +112,20 @@ def env_config(spec: TrainSpec) -> config_dict.ConfigDict:
         spec.condition, robot=spec.robot, task=spec.task, impl=spec.impl, history_len=spec.history_len,
         terrain_amplitude=spec.terrain_amplitude,
     )
-    cfg.erfi.rfi_lim = spec.rfi_lim
-    cfg.erfi.rao_lim = spec.rao_lim
+    erfi.set_torque_limits(cfg, spec.rfi_lim, spec.rao_lim)
     for k, v in spec.env_overrides.items():
         _set_dotted(cfg, k, v)
     return cfg
 
 
 def ppo_config(spec: TrainSpec) -> config_dict.ConfigDict:
-    """Playground's tuned Go1 PPO settings with the study's network choices."""
-    params = locomotion_params.brax_ppo_config("Go1JoystickFlatTerrain")
+    """Playground's tuned PPO settings for the robot's task, with the study's network choices.
+
+    Go1 and A1 use the Go1 entry (unchanged from the first studies). The
+    Berkeley Humanoid uses Playground's Berkeley entry, which differs in
+    entropy_cost (0.005) and clipping_epsilon (0.2); ppo_config.json records it.
+    """
+    params = locomotion_params.brax_ppo_config(erfi.playground_env_name(spec.robot, "flat_terrain"))
     params.num_timesteps = spec.num_timesteps
     params.num_evals = spec.num_evals
     params.network_factory.policy_hidden_layer_sizes = spec.policy_layers

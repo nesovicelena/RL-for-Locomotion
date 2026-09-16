@@ -1,4 +1,4 @@
-r"""Extended Random Force Injection (ERFI) on the Go1 / A1 joystick task.
+r"""Extended Random Force Injection (ERFI) on Playground-style joystick tasks.
 
 Campanaro et al., "Learning and Deploying Robust Locomotion Policies with
 Minimal Dynamics Randomization" (arXiv:2209.12878).
@@ -18,27 +18,38 @@ Modes:
     "erfi_c"   both, every episode
     "erfi_50"  each episode is RFI or RAO with probability 1/2 (paper default)
 
-Observation (paper Sec. VI-B, the blind A1 setup), with H = history_len:
+Observation (paper Sec. VI-B, the blind A1 setup), with H = history_len and
+nu joints:
 
-    gravity (3) | base linvel (3) | gyro (3) | joint-pos-error history (12H)
-    | joint-vel history (12H) | previous action (12) | command (3)
+    gravity (3) | base linvel (3) | gyro (3) | joint-pos-error history (nu H)
+    | joint-vel history (nu H) | previous action (nu) | command (3) | [phase]
 
-H = 7 gives the paper's 192 dimensions; H = 1 is Playground's 48-dim state
-reordered. The critic keeps Playground's privileged state so an asymmetric
-critic remains available.
+H = 7 gives the paper's 192 dimensions on Go1/A1; H = 1 is Playground's 48-dim
+state reordered. The humanoid tasks end with a 4-entry gait clock (`phase`)
+their reward depends on; it is kept as a tail (196 dimensions at H = 7 on the
+Berkeley Humanoid). The critic keeps Playground's privileged state so an
+asymmetric critic remains available.
 
 The joint-position history holds q - q_default by default (Playground's
 entry; what v1 and v2 were trained with). With `cfg.history_target_error`
 it holds the paper's tracking error q* - q instead.
 
-Robots. `cfg.robot` selects the model: "go1" (Playground's Go1JoystickFlatTerrain
-/ RoughTerrain) or "a1" (our port of the same task to Menagerie's Unitree A1,
-the robot of the paper's blind experiment; see envs/a1/). Both share every
-name the task code uses, so the ERFI logic below is robot-agnostic.
+Robots. `cfg.robot` selects the model and the task layout (`ROBOTS`, `LAYOUTS`):
+"go1" (Playground's Go1JoystickFlatTerrain / RoughTerrain), "a1" (our port of
+the same task to Menagerie's Unitree A1, the robot of the paper's blind
+experiment; see envs/a1/), "bh" (Playground's Berkeley Humanoid joystick task;
+see envs/bh/ and docs/humanoid_design.md). The ERFI logic below only needs the
+joint DOFs to follow the six free-base DOFs and the state to hold the joint
+readings in one contiguous block at a known offset.
+
+Torque limits. `cfg.erfi.rfi_lim` / `rao_lim` are either one number (Go1/A1
+studies: 2.5 Nm on every joint) or a per-joint list of `nu` numbers (the
+humanoid, where stance torques differ by an order of magnitude between joints).
 """
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jp
@@ -49,7 +60,9 @@ from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion import register_environment
 from mujoco_playground._src.locomotion.go1 import joystick
 
+from rl_locomotion.envs import bh as bh_pkg
 from rl_locomotion.envs.a1 import A1Joystick
+from rl_locomotion.envs.bh import BerkeleyHumanoidJoystick
 
 ENV_NAME = "Go1JoystickERFI"
 MODES = ("rfi", "rao", "erfi_c", "erfi_50")
@@ -58,15 +71,64 @@ MODES = ("rfi", "rao", "erfi_c", "erfi_50")
 # (`cfg.task`) rather than a constructor argument, so that a run's
 # env_config.json fully determines the environment and evaluation can never
 # silently rebuild a rough-terrain policy on flat ground.
-#   flat_terrain   plane, floor friction 0.6, keyframe height 0.278 m (A1: 0.27)
+#   flat_terrain   plane, floor friction 0.6, keyframe height 0.278 m (A1: 0.27, BH: 0.515)
 #   rough_terrain  20 x 20 m heightfield, 5 cm peak-to-peak (std 1.45 cm),
-#                  floor friction 1.0, keyframe height 0.35 m (A1: 0.34)
+#                  floor friction 1.0, keyframe height 0.35 m (A1: 0.34, BH: 0.56)
 TASKS = ("flat_terrain", "rough_terrain")
 
-# Robot models. Same rule: part of the config, recorded per run.
+
+@dataclass(frozen=True)
+class RobotLayout:
+    """What the mixin needs to know about a robot's Playground task.
+
+    joint_pos_start   offset of `joint_angles - default_pose` in Playground's state;
+                      joint velocities follow immediately (nu entries each)
+    phase_dim         entries of the gait-clock tail at the end of the state (0 if none)
+    push_key          config node of the task's built-in disturbance
+                      (Go1 `pert_config` velocity kicks, humanoid `push_config`)
+    playground_env    Playground env name per task, for the domain randomizer and
+                      the tuned PPO config
+    base_config       the task's own default_config()
+    """
+
+    joint_pos_start: int
+    phase_dim: int
+    push_key: str
+    playground_env: dict[str, str]
+    base_config: Callable[[], config_dict.ConfigDict]
+
+
+# Robot models. Same rule as the terrain: part of the config, recorded per run.
 #   go1  Unitree Go1, 12.74 kg, limits 23.7 Nm hip/thigh, 35.55 Nm knee
 #   a1   Unitree A1, 12.45 kg, limit 33.5 Nm on all joints (the paper's blind robot)
-ROBOTS = ("go1", "a1")
+#   bh   Berkeley Humanoid, 16.06 kg, 12 joints, joint clamps 5-30 Nm (envs/bh/)
+_GO1_LAYOUT = RobotLayout(
+    # Go1 state: linvel 0:3 | gyro 3:6 | gravity 6:9 | joints 9:21 | joint_vel 21:33
+    # | last_act 33:45 | command 45:48
+    joint_pos_start=9,
+    phase_dim=0,
+    push_key="pert_config",
+    playground_env={"flat_terrain": "Go1JoystickFlatTerrain", "rough_terrain": "Go1JoystickRoughTerrain"},
+    base_config=joystick.default_config,
+)
+LAYOUTS: dict[str, RobotLayout] = {
+    "go1": _GO1_LAYOUT,
+    # Same task code on a different model, so the same layout and randomizer.
+    "a1": _GO1_LAYOUT,
+    # Berkeley state: linvel 0:3 | gyro 3:6 | gravity 6:9 | command 9:12 | joints 12:24
+    # | joint_vel 24:36 | last_act 36:48 | phase 48:52
+    "bh": RobotLayout(
+        joint_pos_start=12,
+        phase_dim=4,
+        push_key="push_config",
+        playground_env={
+            "flat_terrain": "BerkeleyHumanoidJoystickFlatTerrain",
+            "rough_terrain": "BerkeleyHumanoidJoystickRoughTerrain",
+        },
+        base_config=bh_pkg.default_config,
+    ),
+}
+ROBOTS = tuple(LAYOUTS)
 
 # The six training conditions of the study. `randomize` toggles Playground's
 # dynamics randomizer (friction, masses, CoM, armature); `mode` the ERFI scheme.
@@ -79,21 +141,18 @@ CONDITIONS: dict[str, dict[str, Any]] = {
     "erfi_50": dict(erfi=True, mode="erfi_50", randomize=False),
 }
 
-# Layout of Playground's 48-dim state, used to slice the noisy joint readings.
-# 0 to 2: base linear velocity, body frame
-# 3 to 5: gyro
-# 6 to 8: gravity vector, body frame
-# 9 to 20: joint angles minus default pose
-# 21 to 32: joint velocities
-# 33 to 44: previous action
-# 45 to 47: command
-_JOINT_POS = slice(9, 21)
-_JOINT_VEL = slice(21, 33)
+
+def playground_env_name(robot: str, task: str = "flat_terrain") -> str:
+    """Playground's registered name of the task the robot's ERFI env is built on."""
+    return LAYOUTS[robot].playground_env[task]
 
 
-def default_config() -> config_dict.ConfigDict:
-    cfg = joystick.default_config()
-    cfg.robot = "go1"
+def default_config(robot: str = "go1") -> config_dict.ConfigDict:
+    if robot not in LAYOUTS:
+        raise ValueError(f"robot must be one of {ROBOTS}, got {robot!r}")
+    layout = LAYOUTS[robot]
+    cfg = layout.base_config()
+    cfg.robot = robot
     cfg.task = "flat_terrain"
     # Peak-to-peak relief of the rough-terrain heightfield in metres. Playground's
     # scene is 0.05; the terrain curriculum trains stages at 0, 0.015, 0.03, 0.05.
@@ -101,6 +160,7 @@ def default_config() -> config_dict.ConfigDict:
     # model is built, so the same heightfield shape is used at every amplitude.
     cfg.terrain_amplitude = 0.05
     # Paper: 7-step history of joint position errors and joint velocities.
+    # (Berkeley's config already carries an unused `history_len = 1`; overwritten.)
     cfg.history_len = 7
     # What the joint-position history holds.
     #   False  q - q_default, Playground's state entry (v1 and v2 runs).
@@ -110,39 +170,82 @@ def default_config() -> config_dict.ConfigDict:
     #          this step; at reset the target is the keyframe pose).
     # Changes the policy input, so it is a new recipe, not a drop-in change.
     cfg.history_target_error = False
-    cfg.erfi = config_dict.create(
-        enable=True,
-        mode="erfi_50",
-        # v2 recipe: append the episode's RAO offset (12) and the RFI flag (1)
-        # to the critic's privileged state (123 -> 136). The policy input is
-        # untouched. Lets the asymmetric critic explain return variance caused
-        # by the hidden per-episode offset, which otherwise makes the advantage
-        # of "start walking" noisy and stalls RAO/ERFI runs in the standing
-        # optimum. v1 studies were trained with False.
-        critic_sees_offset=False,
+    if robot == "bh":
+        # Playground trains the humanoid with random velocity pushes on. That is
+        # a disturbance-training method of its own and would blur the `none`
+        # condition, so the study switches it off in every condition
+        # (docs/humanoid_design.md 4.6). Evaluation disables it regardless.
+        cfg.push_config.enable = False
+        # Extra termination: base height below this (m) ends the episode. The
+        # task itself terminates only once the torso passes horizontal, and the
+        # scene collides feet only, so a buckled robot would otherwise sink
+        # through the floor and keep training. Half the flat spawn height
+        # (0.515 m); the rough scene spawns at 0.56 m over up to 0.05 m of
+        # relief, so the same value leaves 0.2 m of margin there. 0 disables.
+        cfg.min_base_height = 0.5 * 0.515
+        # Playground's `feet_slip` cost multiplies the *base* velocity by the
+        # contact flags, i.e. it penalises walking speed during stance. The ERFI
+        # class replaces it with the feet's own velocity from the foot sensors
+        # (docs/humanoid_design.md 8.1). Set the scale to 0 to drop the term.
+        rfi_lim: Any = list(bh_pkg.PROVISIONAL_TORQUE_LIMIT)
+        rao_lim: Any = list(bh_pkg.PROVISIONAL_TORQUE_LIMIT)
+    else:
         # Nm. The paper uses 20 Nm on the 50 kg ANYmal C, about half a joint's
         # stance torque. Go1 and A1 are both ~12.5 kg, so the study uses 2.5 Nm
         # for both (set by the experiment config; 7.0 here is the historical
         # default that turned out too large, see the ERFI report).
-        rfi_lim=7.0,
-        rao_lim=7.0,
+        rfi_lim, rao_lim = 7.0, 7.0
+    cfg.erfi = config_dict.create(
+        enable=True,
+        mode="erfi_50",
+        # v2 recipe: append the episode's RAO offset (nu) and the RFI flag (1)
+        # to the critic's privileged state (123 -> 136 on Go1). The policy input
+        # is untouched. Lets the asymmetric critic explain return variance
+        # caused by the hidden per-episode offset, which otherwise makes the
+        # advantage of "start walking" noisy and stalls RAO/ERFI runs in the
+        # standing optimum. v1 studies were trained with False.
+        critic_sees_offset=False,
+        # One number for every joint, or a list with one entry per joint
+        # (`set_torque_limits`). The humanoid's provisional vector is 10 % of
+        # each joint's actuator-force clamp; the study replaces it with a
+        # measured one (scripts/measure_stance_torque.py).
+        rfi_lim=rfi_lim,
+        rao_lim=rao_lim,
     )
     return cfg
+
+
+def set_torque_limits(cfg: config_dict.ConfigDict, rfi_lim: Any, rao_lim: Any) -> None:
+    """Write scalar or per-joint limits into `cfg.erfi`, whatever type is there now.
+
+    ConfigDict locks the type of a field on first assignment; the same field is
+    a float for Go1/A1 and a list for the humanoid, so bypass the check here.
+    """
+    with cfg.erfi.ignore_type():
+        cfg.erfi.rfi_lim = _as_limit(rfi_lim)
+        cfg.erfi.rao_lim = _as_limit(rao_lim)
+
+
+def _as_limit(value: Any) -> Any:
+    if isinstance(value, (list, tuple)):
+        return [float(v) for v in value]
+    return float(value)
 
 
 def condition_config(name: str, **overrides: Any) -> config_dict.ConfigDict:
     """Default config for one of the study's training conditions."""
     if name not in CONDITIONS:
         raise ValueError(f"unknown condition {name!r}; choose from {list(CONDITIONS)}")
-    cfg = default_config()
+    robot = overrides.pop("robot", "go1")
+    if robot not in LAYOUTS:
+        raise ValueError(f"robot must be one of {ROBOTS}, got {robot!r}")
+    cfg = default_config(robot)
     cfg.erfi.enable = CONDITIONS[name]["erfi"]
     cfg.erfi.mode = CONDITIONS[name]["mode"]
     for k, v in overrides.items():
         cfg[k] = v
     if cfg.task not in TASKS:
         raise ValueError(f"task must be one of {TASKS}, got {cfg.task!r}")
-    if cfg.robot not in ROBOTS:
-        raise ValueError(f"robot must be one of {ROBOTS}, got {cfg.robot!r}")
     if cfg.task == "rough_terrain":
         # More contacts against the heightfield than against a plane. Playground
         # uses naconmax 8*8192 and njmax 60; Warp 1.16 overflowed njmax=60 in
@@ -159,7 +262,7 @@ def uses_domain_randomization(name: str) -> bool:
 
 
 class _ERFIMixin:
-    """ERFI torque perturbation + history observation, on top of a Go1-style joystick task.
+    """ERFI torque perturbation + history observation, on top of a Playground joystick task.
 
     Must come first in the MRO; the base class is the robot-specific Joystick.
     """
@@ -167,7 +270,7 @@ class _ERFIMixin:
     ROBOT: str = ""
 
     def __init__(self, task=None, config=None, config_overrides=None):
-        cfg = default_config() if config is None else config
+        cfg = default_config(self.ROBOT) if config is None else config
         # The terrain and robot live in the config. A `task` argument is accepted
         # for API compatibility with Playground but must agree with `cfg.task`.
         cfg_task = cfg.get("task", "flat_terrain")
@@ -178,6 +281,7 @@ class _ERFIMixin:
             raise ValueError(f"config.task must be one of {TASKS}, got {cfg_task!r}")
         if cfg_robot != self.ROBOT:
             raise ValueError(f"{type(self).__name__} is the {self.ROBOT!r} env; config.robot is {cfg_robot!r}")
+        self._layout = LAYOUTS[self.ROBOT]
         # Playground's Joystick.__init__ overwrites naconmax/njmax for rough
         # terrain with its own (too small) values. Remember ours and restore
         # them afterwards; make_data reads them at reset time, so this is
@@ -201,7 +305,24 @@ class _ERFIMixin:
         if self._config.history_len < 1:
             raise ValueError("history_len must be >= 1")
         # Joint DOFs sit after the 6 free-base DOFs.
-        self._joint_dof_start = self.mjx_model.nv - self.mjx_model.nu
+        nu, nv = self.mjx_model.nu, self.mjx_model.nv
+        if nv - nu != 6:
+            raise ValueError(f"expected six free-base DOFs before the joints, got nv - nu = {nv - nu}")
+        self._joint_dof_start = nv - nu
+        s = self._layout.joint_pos_start
+        self._joint_pos_slice = slice(s, s + nu)
+        self._joint_vel_slice = slice(s + nu, s + 2 * nu)
+        self._rfi_lim = self._limit_vector(self._config.erfi.rfi_lim, "rfi_lim")
+        self._rao_lim = self._limit_vector(self._config.erfi.rao_lim, "rao_lim")
+
+    def _limit_vector(self, value: Any, name: str) -> jax.Array:
+        """Scalar or per-joint limit -> array broadcastable against (nu,)."""
+        arr = jp.asarray(value, dtype=jp.float32)
+        if arr.ndim == 0:
+            return arr
+        if arr.shape != (self.mjx_model.nu,):
+            raise ValueError(f"erfi.{name} must be a number or {self.mjx_model.nu} numbers, got shape {arr.shape}")
+        return arr
 
     @property
     def task(self) -> str:
@@ -210,6 +331,18 @@ class _ERFIMixin:
     @property
     def robot(self) -> str:
         return self.ROBOT
+
+    @property
+    def layout(self) -> RobotLayout:
+        return self._layout
+
+    @property
+    def rfi_lim(self) -> jax.Array:
+        return self._rfi_lim
+
+    @property
+    def rao_lim(self) -> jax.Array:
+        return self._rao_lim
 
     @property
     def terrain_amplitude(self) -> float:
@@ -223,6 +356,16 @@ class _ERFIMixin:
         """Sliding friction of the floor geom as trained (0.6 flat, 1.0 rough)."""
         return float(self.mj_model.geom_friction[self._floor_geom_id, 0])
 
+    @property
+    def total_mass(self) -> float:
+        """Mass of the whole robot in kg (subtree mass of the world body)."""
+        return float(self.mj_model.body_subtreemass[0])
+
+    @property
+    def spawn_height(self) -> float:
+        """Base height of the task's `home` keyframe in metres."""
+        return float(self.mj_model.keyframe("home").qpos[2])
+
     # ------------------------------------------------------------------ ERFI
 
     def _sample_erfi(self, rng: jax.Array) -> tuple[jax.Array, jax.Array]:
@@ -232,8 +375,9 @@ class _ERFIMixin:
         # k_mode is used to decide whether to use RFI or RAO in the "erfi_50" mode.
         rng, k_off, k_mode = jax.random.split(rng, 3)
 
+        # minval/maxval broadcast, so a per-joint limit vector works unchanged.
         tau_o = jax.random.uniform(
-            k_off, (self.mjx_model.nu,), minval=-cfg.rao_lim, maxval=cfg.rao_lim
+            k_off, (self.mjx_model.nu,), minval=-self._rao_lim, maxval=self._rao_lim
         )
 
         if cfg.mode == "rfi":
@@ -251,10 +395,15 @@ class _ERFIMixin:
 
     # ----------------------------------------------------------- observation
 
-    def _get_obs(self, data: Any, info: dict[str, Any]) -> dict[str, jax.Array]:
-        obs = super()._get_obs(data, info)
+    def _obs_extra_args(self, data: Any) -> tuple:
+        """Extra positional arguments the base task's `_get_obs` takes (none for Go1)."""
+        del data
+        return ()
+
+    def _get_obs(self, data: Any, info: dict[str, Any], *args: Any) -> dict[str, jax.Array]:
+        obs = super()._get_obs(data, info, *args)
         pg = obs["state"]
-        joint_pos, joint_vel = pg[_JOINT_POS], pg[_JOINT_VEL]
+        joint_pos, joint_vel = pg[self._joint_pos_slice], pg[self._joint_vel_slice]
         if self._config.get("history_target_error", False):
             # q* - q = (q_default + a * scale) - q = a * scale - (q - q_default).
             # `applied_act` is the action of the step being observed; zeros at
@@ -273,7 +422,7 @@ class _ERFIMixin:
             info["joint_pos_hist"] = jp.roll(info["joint_pos_hist"], 1, axis=0).at[0].set(joint_pos)
             info["joint_vel_hist"] = jp.roll(info["joint_vel_hist"], 1, axis=0).at[0].set(joint_vel)
 
-        state = jp.hstack([
+        parts = [
             pg[6:9],  # gravity in body frame (orientation, yaw-free)
             pg[0:3],  # base linear velocity
             pg[3:6],  # gyro
@@ -281,7 +430,11 @@ class _ERFIMixin:
             info["joint_vel_hist"].ravel(),
             info["last_act"],
             info["command"],
-        ])
+        ]
+        if self._layout.phase_dim:
+            # The task's gait clock (cos/sin per foot); its reward depends on it.
+            parts.append(pg[pg.shape[0] - self._layout.phase_dim :])
+        state = jp.hstack(parts)
         privileged = obs["privileged_state"]
         if self._config.erfi.get("critic_sees_offset", False):
             # Zeros on the very first call from reset(); reset() recomputes the
@@ -309,7 +462,8 @@ class _ERFIMixin:
             # The history is already filled with the current reading, so the
             # roll inside _get_obs leaves it unchanged; only the critic's extra
             # entries change.
-            state = state.replace(obs=self._get_obs(state.data, state.info))
+            obs = self._get_obs(state.data, state.info, *self._obs_extra_args(state.data))
+            state = state.replace(obs=obs)
         return state
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
@@ -318,7 +472,7 @@ class _ERFIMixin:
             rng, key = jax.random.split(state.info["rng"])
             state.info["rng"] = rng
             tau_r = jax.random.uniform(
-                key, (self.mjx_model.nu,), minval=-cfg.rfi_lim, maxval=cfg.rfi_lim
+                key, (self.mjx_model.nu,), minval=-self._rfi_lim, maxval=self._rfi_lim
             )
             tau = state.info["erfi_offset"] + tau_r * state.info["erfi_use_rfi"]
             qfrc = jp.zeros(self.mjx_model.nv).at[self._joint_dof_start :].set(tau)
@@ -369,7 +523,42 @@ class A1JoystickERFI(_ERFIMixin, A1Joystick):
     ROBOT = "a1"
 
 
-ENV_CLASSES = {"go1": Go1JoystickERFI, "a1": A1JoystickERFI}
+class BerkeleyHumanoidJoystickERFI(_ERFIMixin, BerkeleyHumanoidJoystick):
+    """Berkeley Humanoid joystick with ERFI torque perturbations and a history observation."""
+
+    ROBOT = "bh"
+
+    def _get_termination(self, data: Any) -> jax.Array:
+        # Task: gravity z < 0 or NaN. Plus: base below `min_base_height` (see
+        # default_config). A true terminal for Brax (it arrives through
+        # `state.done`, not the episode wrapper's truncation), so no value is
+        # bootstrapped from a collapsed pose.
+        done = super()._get_termination(data)
+        h = float(self._config.get("min_base_height", 0.0))
+        if h > 0:
+            done = done | (data.qpos[2] < h)
+        return done
+
+    def _cost_feet_slip(self, data: Any, contact: jax.Array, info: dict[str, Any]) -> jax.Array:
+        # Horizontal speed of each foot while it is in contact, from the same
+        # foot linear-velocity sensors `_cost_feet_clearance` reads. Playground's
+        # version uses the base velocity instead, which penalises every stance
+        # phase of walking.
+        del info
+        feet_vel = data.sensordata[self._foot_linvel_sensor_adr]  # (2, 3)
+        return jp.sum(jp.linalg.norm(feet_vel[..., :2], axis=-1) * contact)
+
+    def _obs_extra_args(self, data: Any) -> tuple:
+        # Berkeley's `_get_obs(data, info, contact)` takes the foot-contact
+        # flags; recompute them from the same sensors its reset/step use.
+        contact = jp.array([
+            data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
+            for sensor_id in self._feet_floor_found_sensor
+        ])
+        return (contact,)
+
+
+ENV_CLASSES = {"go1": Go1JoystickERFI, "a1": A1JoystickERFI, "bh": BerkeleyHumanoidJoystickERFI}
 
 
 def register() -> None:
@@ -392,13 +581,12 @@ def load(config: config_dict.ConfigDict | None = None, **config_overrides: Any):
 
 
 def domain_randomizer(task: str = "flat_terrain", robot: str = "go1"):
-    """Playground's Go1 dynamics randomizer; the `dr` condition uses it.
+    """Playground's dynamics randomizer for the robot's task; the `dr` condition uses it.
 
-    Playground registers the same function for both terrains. It works by
-    index (geom 0 = floor, body 1 = trunk, dofs 6: = the 12 joints), and both
-    the Go1 and A1 scenes satisfy that layout (verified in tests), so the same
-    randomizer serves both robots.
+    Go1 and A1 share Go1's function: it works by index (geom 0 = floor, body 1 =
+    trunk, dofs 6: = the 12 joints), and both scenes satisfy that layout
+    (verified in tests). The Berkeley Humanoid has its own function with the
+    same index conventions but different terms (torso mass +-1 kg and rest-pose
+    jitter instead of a CoM jitter); see docs/humanoid_design.md 2.1.
     """
-    del robot  # same function for go1 and a1
-    name = {"flat_terrain": "Go1JoystickFlatTerrain", "rough_terrain": "Go1JoystickRoughTerrain"}[task]
-    return pg_registry.get_domain_randomizer(name)
+    return pg_registry.get_domain_randomizer(playground_env_name(robot, task))

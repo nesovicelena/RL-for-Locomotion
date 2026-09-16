@@ -4,6 +4,7 @@
 #   v1  erfi_study          erfi_study_rough
 #   v2  erfi_study_v2       erfi_study_v2_rough
 #   v3  erfi_study_v3       erfi_study_v3_rough
+#   bh  erfi_study_bh_rough erfi_study_bh        (Berkeley Humanoid; docs/humanoid_design.md)
 #
 # On the pod, inside tmux so a dropped SSH connection does not kill it:
 #
@@ -23,7 +24,7 @@
 #
 # Knobs (environment variables):
 #   RL_EXPERIMENTS_DIR  output root                       (default: see above)
-#   STUDIES             space-separated config names      (default: all six)
+#   STUDIES             space-separated config names      (default: all eight)
 #   NUM_TIMESTEPS       override the configs' 200M steps per run (e.g. 300000000)
 #   NUM_EVALS           override the configs' 10 evals / checkpoints per run
 #   SMOKE=1             2M-step pipeline check of every study, ~1 min each
@@ -46,7 +47,7 @@ LOGS="${ROOT}/logs"
 STATUS="${ROOT}/status.txt"
 mkdir -p "${LOGS}"
 
-STUDIES="${STUDIES:-erfi_study erfi_study_rough erfi_study_v2 erfi_study_v2_rough erfi_study_v3 erfi_study_v3_rough}"
+STUDIES="${STUDIES:-erfi_study erfi_study_rough erfi_study_v2 erfi_study_v2_rough erfi_study_v3 erfi_study_v3_rough erfi_study_bh_rough erfi_study_bh}"
 SMOKE_FLAG=""
 if [ "${SMOKE:-0}" = "1" ]; then
     SMOKE_FLAG="--smoke"

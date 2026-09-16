@@ -1,0 +1,48 @@
+# ERFI study on the Berkeley Humanoid, flat terrain. Same recipe as
+# erfi_study_bh_rough.yaml (the primary study); see that file and
+# docs/humanoid_design.md for every choice. Torque limits are PROVISIONAL
+# until scripts/measure_stance_torque.py writes the measured vector.
+#
+#   python scripts/train.py --config configs/experiment/erfi_study_bh.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_bh.yaml --plot
+
+name: erfi_study_bh
+out: erfi_study_bh              # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  robot: bh
+  task: flat_terrain
+  num_timesteps: 200_000_000
+  num_evals: 10
+  history_len: 7
+  policy_layers: [512, 512]
+  value_layers: [512, 256, 128]
+  symmetric_critic: false
+  rfi_lim: [2.0, 2.0, 3.0, 3.0, 2.0, 0.5, 2.0, 2.0, 3.0, 3.0, 2.0, 0.5]   # PROVISIONAL
+  rao_lim: [2.0, 2.0, 3.0, 3.0, 2.0, 0.5, 2.0, 2.0, 3.0, 3.0, 2.0, 0.5]   # PROVISIONAL
+  impl: warp
+  env_overrides:
+    erfi.critic_sees_offset: true
+    history_target_error: true
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N_sagittal, push_N_lateral, friction, gravity, kp_scale]
+  level_fractions:
+    payload_kg: [0.0, 0.025, 0.05, 0.075, 0.10, 0.15, 0.20]
+    push_N_sagittal: [0.0, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24, 0.32]
+    push_N_lateral: [0.0, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24, 0.32]
+  # friction: PROTOCOL's 0.2-0.8, flat scene trains at 0.6
+  low_base_fraction: 0.5
+  # Start each protocol episode from the keyframe pose at rest (paper: same position every time);
+  # Playground's reset otherwise scales the joints by U(0.5, 1.5) and kicks the base.
+  nominal_reset: true

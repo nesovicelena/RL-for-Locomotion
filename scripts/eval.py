@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", default=str(REPO / "configs/experiment/erfi_study.yaml"))
     p.add_argument("--runs", help="run root (default: <out> from the config)")
-    p.add_argument("--params", nargs="+", choices=list(perturb.PROTOCOL))
+    p.add_argument("--params", nargs="+", choices=list(perturb.ALL_PARAMS))
     p.add_argument("--n-episodes", type=int)
     p.add_argument("--impl", choices=["warp", "jax"])
     p.add_argument("--checkpoint", default="params_final")
