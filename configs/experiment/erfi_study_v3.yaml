@@ -1,9 +1,16 @@
-# v3 recipe: v2 plus the paper's joint-position history.
+# v3 recipe: v1 plus the paper's joint-position history, nothing else.
 #
 # The history holds q* - q (tracking error against the PD target the
 # controller is holding), as in Campanaro et al. Sec. VI-B, instead of
 # Playground's q - q_default used by v1 and v2. Kept separate from those runs
 # because the policy input changes.
+#
+# v3 was first defined as v2 + this change. The redo sweep (experiments/redo,
+# 300 M steps, full reset) showed v2 itself is a regression: on flat ground
+# 2 of 18 v2 policies walk against 11 of 18 for v1 with identical code and
+# budget, because tracking_sigma 0.1 also removes the reward for partial
+# progress towards the command. v3 therefore builds on v1, so that v1 vs v3
+# isolates the history change.
 #
 #   python scripts/train.py --config configs/experiment/erfi_study_v3.yaml
 #   python scripts/eval.py  --config configs/experiment/erfi_study_v3.yaml --plot
@@ -26,8 +33,6 @@ train:
   rao_lim: 2.5
   impl: warp
   env_overrides:
-    reward_config.tracking_sigma: 0.1
-    erfi.critic_sees_offset: true
     history_target_error: true
 
 eval:

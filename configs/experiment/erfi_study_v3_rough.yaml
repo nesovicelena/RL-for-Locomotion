@@ -1,6 +1,6 @@
-# v3 recipe on rough terrain: v2 plus the paper's joint-position history
-# (q* - q, see erfi_study_v3.yaml). Same six conditions and protocol as
-# erfi_study_rough.yaml.
+# v3 recipe on rough terrain: v1 plus the paper's joint-position history
+# (q* - q, see erfi_study_v3.yaml for why it no longer builds on v2). Same six
+# conditions and protocol as erfi_study_rough.yaml.
 #
 #   python scripts/train.py --config configs/experiment/erfi_study_v3_rough.yaml
 #   python scripts/eval.py  --config configs/experiment/erfi_study_v3_rough.yaml --plot
@@ -24,8 +24,6 @@ train:
   rao_lim: 2.5
   impl: warp
   env_overrides:
-    reward_config.tracking_sigma: 0.1
-    erfi.critic_sees_offset: true
     history_target_error: true
 
 eval:
