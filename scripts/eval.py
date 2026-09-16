@@ -2,10 +2,15 @@
 
     python scripts/eval.py --config configs/experiment/erfi_study.yaml --plot
     python scripts/eval.py --runs /workspace/experiments/erfi_study --params payload_kg push_N
+    # cross-terrain: flat-trained policies, full protocol on the rough heightfield
+    python scripts/eval.py --config configs/experiment/erfi_study.yaml --task rough_terrain --plot
 
 Writes <runs>/results.csv (one row per run x parameter x level), a per-condition
 summary table, and with --plot the Fig.-5-style success curves as PNG.
-Already-evaluated runs are skipped unless --force is given.
+With --task (or --terrain-amplitude) the scene differs from the training one, so
+the outputs get a suffix, e.g. results_rough_terrain.csv, and the friction sweep is
+centred on that scene's floor friction. Already-evaluated runs are skipped unless
+--force is given.
 """
 from __future__ import annotations
 
@@ -47,6 +52,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-episodes", type=int)
     p.add_argument("--impl", choices=["warp", "jax"])
     p.add_argument("--checkpoint", default="params_final")
+    p.add_argument("--task", choices=list(erfi.TASKS), help="evaluate on this terrain instead of the training one")
+    p.add_argument("--terrain-amplitude", type=float, help="heightfield relief in m (rough terrain), default 0.05")
     p.add_argument("--seed", type=int, default=0, help="seed for the evaluation episodes")
     p.add_argument("--plot", action="store_true")
     p.add_argument("--force", action="store_true")
@@ -64,6 +71,19 @@ def main() -> None:
         ev["params"] = args.params
     ev["command"] = tuple(ev.get("command", (0.5, 0.0, 0.0)))
     ev["params"] = tuple(ev.get("params", perturb.PROTOCOL))
+    overrides = {}
+    suffix = ""
+    if args.task:
+        overrides["task"] = args.task
+        suffix += f"_{args.task}"
+        # the config's friction levels belong to the training scene; recentre on the target scene
+        if args.task == "rough_terrain" and "friction" not in ev.get("levels", {}):
+            ev.setdefault("levels", {})["friction"] = [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]
+        if args.task == "flat_terrain":
+            ev.setdefault("levels", {}).pop("friction", None)  # back to PROTOCOL's 0.2..0.8
+    if args.terrain_amplitude is not None:
+        overrides["terrain_amplitude"] = args.terrain_amplitude
+        suffix += f"_a{args.terrain_amplitude:.3f}"
     spec = perturb.EvalSpec(**ev)
 
     root = Path(args.runs or cfg.get("out", "erfi_study"))
@@ -73,7 +93,9 @@ def main() -> None:
     if not runs:
         sys.exit(f"no finished runs under {root}")
 
-    results_path = root / "results.csv"
+    results_path = root / f"results{suffix}.csv"
+    if suffix:
+        print(f"evaluating on {overrides} -> {results_path.name}")
     existing = pd.read_csv(results_path) if results_path.exists() and not args.force else pd.DataFrame()
     frames = [existing] if len(existing) else []
     done_runs = set(existing["run"]) if len(existing) else set()
@@ -85,11 +107,12 @@ def main() -> None:
             continue
         summary = json.loads((run_dir / "summary.json").read_text())
         print(f"\n=== {run_id}")
-        env = erfi.load(perturb.eval_env_config(ppo.load_env_config(run_dir), impl=impl))
+        env = erfi.load(perturb.eval_env_config(ppo.load_env_config(run_dir, **overrides), impl=impl))
         policy = ppo.load_policy(run_dir, env, checkpoint=args.checkpoint)
         df = perturb.evaluate_policy(
             env, policy, spec, seed=args.seed,
-            meta={"run": run_id, "condition": summary["condition"], "seed": summary["seed"]},
+            meta={"run": run_id, "condition": summary["condition"], "seed": summary["seed"],
+                  "trained_task": summary.get("task", "flat_terrain")},
         )
         frames.append(df)
         pd.concat(frames, ignore_index=True).to_csv(results_path, index=False)
@@ -99,7 +122,7 @@ def main() -> None:
     print(f"\nresults -> {results_path}")
 
     table = perturb.summary_table(results)
-    table.to_csv(root / "summary_success_rate.csv")
+    table.to_csv(root / f"summary_success_rate{suffix}.csv")
     print("\nmean success rate over all levels:\n", table.to_string())
 
     if args.plot:
@@ -108,7 +131,7 @@ def main() -> None:
         matplotlib.use("Agg")
         for metric in ("success_rate", "fall_rate", "progress_m"):
             fig = perturb.plot_success_curves(results, metric=metric)
-            path = root / f"{metric}_curves.png"
+            path = root / f"{metric}_curves{suffix}.png"
             fig.savefig(path, dpi=150, bbox_inches="tight")
             print(f"figure -> {path}")
 
