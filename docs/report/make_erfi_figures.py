@@ -43,8 +43,11 @@ XLABEL = {
     "friction": "коефицијент трења пода",
     "gravity": "гравитационо убрзање (m/s²)",
     "kp_scale": "множилац појачања Kp",
+    "slope_deg": "нагиб успона (°)",
+    "terrain_amplitude": "рељеф терена, од врха до дна (m)",
 }
-NOMINAL = {"payload_kg": 0.0, "push_N": 0.0, "friction": 0.6, "gravity": -9.81, "kp_scale": 1.0}
+NOMINAL = {"payload_kg": 0.0, "push_N": 0.0, "friction": 0.6, "gravity": -9.81, "kp_scale": 1.0,
+           "slope_deg": 0.0, "terrain_amplitude": 0.05}
 YLABEL = {
     "success_rate": "стопа успеха",
     "fall_rate": "стопа падова",
@@ -123,8 +126,12 @@ def fig_learning(root: Path, fname: str, title_note: str):
 
 def fig_protocol(results: pd.DataFrame, metric: str, fname: str, ylim, hline=None):
     conditions = [c for c in ORDER if c in set(results.condition)]
-    fig, axes = plt.subplots(2, 3, figsize=(10.2, 5.6))
-    for ax, param in zip(axes.flat, PARAMS):
+    params = [p for p in PARAMS + ["slope_deg", "terrain_amplitude"] if p in set(results.param)]
+    if len(params) <= 3:  # terrain suites: one row, legend in the last free slot
+        fig, axes = plt.subplots(1, 3, figsize=(10.2, 3.1))
+    else:
+        fig, axes = plt.subplots(2, 3, figsize=(10.2, 5.6))
+    for ax, param in zip(axes.flat, params):
         sub = results[results.param == param]
         for cond in conditions:
             g = sub[sub.condition == cond].groupby("level")[metric]
@@ -144,10 +151,11 @@ def fig_protocol(results: pd.DataFrame, metric: str, fname: str, ylim, hline=Non
         ax.set_ylabel(YLABEL[metric])
         ax.grid(**GRID)
         _despine(ax)
-    axes.flat[-1].axis("off")
-    _legend(fig, conditions, ncol=3, y=0.02)
-    # legend lives in the empty sixth panel
-    fig.legends[-1].set_bbox_to_anchor((0.83, 0.12))
+    for ax in list(axes.flat)[len(params):]:
+        ax.axis("off")
+    _legend(fig, conditions, ncol=3 if len(params) > 3 else 2, y=0.02)
+    # legend lives in the last empty panel
+    fig.legends[-1].set_bbox_to_anchor((0.83, 0.12) if len(params) > 3 else (0.84, 0.25))
     fig.tight_layout()
     fig.savefig(OUT / fname, dpi=200, bbox_inches="tight")
     plt.close(fig)
@@ -155,8 +163,14 @@ def fig_protocol(results: pd.DataFrame, metric: str, fname: str, ylim, hline=Non
 
 def best_seed_subset(results: pd.DataFrame) -> pd.DataFrame:
     """One run per condition: the walking seed with the highest mean success over all levels."""
-    nominal = results[(results.param == "payload_kg") & (results.level == 0.0)]
-    walking = set(nominal[nominal.progress_m >= 1.0].run)
+    if "payload_kg" in set(results.param):
+        nominal = results[(results.param == "payload_kg") & (results.level == 0.0)]
+        walking = set(nominal[nominal.progress_m >= 1.0].run)
+    else:  # terrain suites: judge on the mildest level of the first parameter
+        p0 = results.param.iloc[0]
+        first = results[results.param == p0]
+        first = first[first.level == first.level.min()]
+        walking = set(first[first.progress_m >= 1.0].run)
     score = results[results.run.isin(walking)].groupby(["condition", "run"]).success_rate.mean()
     best = score.groupby("condition").idxmax().map(lambda t: t[1])
     print("best seeds:", dict(best))
@@ -224,6 +238,22 @@ def fig_limits(fname: str):
     plt.close(fig)
 
 
+def suite_figures(study: str, suite: str, tag: str):
+    """Figures for one terrain suite (results_<suite>.csv) of one study."""
+    global OUT
+    OUT = REPO / "docs/report/figures/erfi" / tag / suite
+    OUT.mkdir(parents=True, exist_ok=True)
+    res = pd.read_csv(EXP / study / f"results_{suite}.csv")
+    fig_protocol(res, "success_rate", "success_all.png", (-0.02, 1.02))
+    fig_protocol(res, "fall_rate", "fall_all.png", (-0.02, 1.02))
+    fig_protocol(res, "progress_m", "progress_all.png", (0, 4.6), hline=(2.5, "праг успеха 2,5 m"))
+    best = best_seed_subset(pd.concat([res]))  # "walking" judged within this suite's own first param/level
+    fig_protocol(best, "success_rate", "success_best.png", (-0.02, 1.02))
+    params = [p for p in res.param.unique()]
+    tab = res.groupby(["condition", "param"]).success_rate.mean().unstack("param").reindex(ORDER)[params]
+    tab.to_csv(OUT / "summary_all.csv"); print(tab.round(3)); print("written to", OUT)
+
+
 def study_figures(study: str, tag: str | None = None, learning_title: str = "граница момента 2,5 Nm"):
     """Protocol figures + learning curves for one study directory. Sets OUT."""
     global OUT
@@ -257,6 +287,9 @@ def study_figures(study: str, tag: str | None = None, learning_title: str = "г�
 
 def main():
     import sys
+    if len(sys.argv) > 3:  # python make_erfi_figures.py <study> <tag> <suite>
+        suite_figures(sys.argv[1], sys.argv[3], sys.argv[2])
+        return
     if len(sys.argv) > 1:  # another study, own sub-directory
         study_figures(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else sys.argv[1],
                       learning_title=f"{sys.argv[1]}, граница момента 2,5 Nm")

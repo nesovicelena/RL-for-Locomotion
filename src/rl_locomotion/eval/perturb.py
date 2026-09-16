@@ -59,11 +59,20 @@ PROTOCOL: dict[str, tuple[list[float], float]] = {
     "friction": ([0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], 0.6),
     "gravity": ([-2.0, -5.0, -7.0, -9.81, -12.0, -15.0, -18.0], -9.81),
     "kp_scale": ([0.33, 0.5, 0.75, 1.0, 1.25, 1.5], 1.0),
+    # Terrain parameters, rough_terrain scenes only (they rewrite the heightfield):
+    #   slope_deg          uphill slope of the bowl (see envs/terrain.make_bowl); the
+    #                      env's terrain_shape decides whether relief is added on top
+    #   terrain_amplitude  peak-to-peak relief of the rocky field, m
+    "slope_deg": ([0.0, 10.0, 20.0, 30.0], 0.0),
+    "terrain_amplitude": ([0.05, 0.07, 0.08, 0.09, 0.10], 0.05),
 }
+TERRAIN_PARAMS: tuple[str, ...] = ("slope_deg", "terrain_amplitude")
 
 # Directional variants of the push. Same levels and nominal as push_N.
 PUSH_AXES: dict[str, int] = {"push_N": 0, "push_N_sagittal": 1, "push_N_lateral": 2}
 ALL_PARAMS: tuple[str, ...] = tuple(PROTOCOL) + ("push_N_sagittal", "push_N_lateral")
+# The paper's protocol (the five physical parameters); terrain ones are opt-in.
+STANDARD_PARAMS: tuple[str, ...] = ("payload_kg", "push_N", "friction", "gravity", "kp_scale")
 
 # What a fractional level multiplies, per parameter (`EvalSpec.level_fractions`).
 _FRACTION_OF = {"payload_kg": "mass", "push_N": "weight", "push_N_sagittal": "weight", "push_N_lateral": "weight"}
@@ -81,6 +90,11 @@ def nominal_value(env: Any, param: str) -> float:
         return float(env.mj_model.geom_friction[env._floor_geom_id, 0])
     if param == "gravity":
         return float(env.mj_model.opt.gravity[2])
+    if param == "terrain_amplitude":
+        return float(getattr(env, "terrain_amplitude", 0.0))
+    if param == "slope_deg":
+        shape = env._config.get("terrain_shape", "playground") if hasattr(env, "_config") else "playground"
+        return float(env._config.get("slope_deg", 0.0)) if shape in ("bowl", "rough_bowl") else 0.0
     return PROTOCOL[base_param(param)][1]
 
 
@@ -97,6 +111,8 @@ LABELS = {
     "friction": "floor friction coefficient",
     "gravity": "gravity (m/s²)",
     "kp_scale": "Kp multiplier",
+    "slope_deg": "uphill slope (deg)",
+    "terrain_amplitude": "terrain relief, peak to peak (m)",
 }
 
 
@@ -108,7 +124,7 @@ class EvalSpec:
     n_episodes: int = 50
     push_start_s: float = 1.0
     push_duration_s: float = 3.0
-    params: tuple[str, ...] = tuple(PROTOCOL)
+    params: tuple[str, ...] = STANDARD_PARAMS
     levels: dict[str, list[float]] = field(default_factory=dict)  # override PROTOCOL levels (absolute)
     # Levels as fractions of the robot's mass (payload_kg) or weight m g (push_N*),
     # resolved against the model by `levels_for`. `levels` wins if both are given.
@@ -151,6 +167,14 @@ def eval_env_config(train_env_cfg: Any, impl: str = "jax") -> Any:
         cfg.erfi.critic_sees_offset = False
     if "terrain_amplitude" not in cfg:
         cfg.terrain_amplitude = 0.05
+    if "terrain_shape" not in cfg:
+        cfg.terrain_shape = "playground"
+    if "slope_deg" not in cfg:
+        cfg.slope_deg = 10.0
+    if "hfield_elevation_cap" not in cfg or cfg.hfield_elevation_cap <= 0:
+        # fixed elevation so slope / relief can be swept as traced heightfield data;
+        # 8 m covers a 30 deg bowl rim (5.2 m) with room to spare
+        cfg.hfield_elevation_cap = 8.0
     cfg.erfi.enable = False
     # Go1's `pert_config` velocity kicks, the humanoid's `push_config` pushes.
     cfg[erfi.LAYOUTS[cfg.robot].push_key].enable = False
@@ -158,8 +182,48 @@ def eval_env_config(train_env_cfg: Any, impl: str = "jax") -> Any:
     return cfg
 
 
+def terrain_model(env: Any, slope_deg: float | None = None, amplitude: float | None = None) -> Any:
+    """The env's MJX model with its heightfield rebuilt for another slope and/or relief.
+
+    Follows the env's `terrain_shape`: "playground" -> rocky field at `amplitude`;
+    "bowl" -> smooth bowl at `slope_deg`; "rough_bowl" -> bowl plus rocky relief.
+    Unspecified values default to the env's own. MJX keeps the heightfield
+    elevation static, so the env must have been built with a fixed
+    `hfield_elevation_cap` (eval_env_config sets 8 m on rough terrain); the
+    terrain then lives entirely in `hfield_data`, a traced model field.
+    """
+    from rl_locomotion.envs.terrain import build_terrain
+
+    if getattr(env, "task", None) != "rough_terrain" or getattr(env, "_base_hfield", None) is None:
+        raise ValueError("terrain parameters need a rough_terrain env (it carries the heightfield)")
+    cfg = env._config
+    cap = float(cfg.get("hfield_elevation_cap", 0.0))
+    if cap <= 0:
+        raise ValueError("terrain parameters need hfield_elevation_cap > 0 in the env config (see eval_env_config)")
+    shape = cfg.get("terrain_shape", "playground")
+    slope = float(cfg.get("slope_deg", 0.0)) if slope_deg is None else float(slope_deg)
+    amp = float(cfg.get("terrain_amplitude", 0.05)) if amplitude is None else float(amplitude)
+    if slope_deg is not None and shape == "playground":
+        shape = "bowl" if amp <= 0 else "rough_bowl"  # a slope asked of a rocky field: put the field on a bowl
+    m = env.mj_model
+    grid, elevation = build_terrain(
+        env._base_hfield, shape, amplitude=amp, slope_deg=slope,
+        nrow=int(m.hfield_nrow[0]), ncol=int(m.hfield_ncol[0]), radius_m=float(m.hfield_size[0, 0]),
+    )
+    if elevation > cap + 1e-9:
+        raise ValueError(f"terrain rises {elevation:.2f} m, above hfield_elevation_cap={cap}")
+    model = env.mjx_model
+    start = int(m.hfield_adr[0]); n = grid.size
+    data = jp.asarray(model.hfield_data).at[start : start + n].set(jp.asarray(grid.ravel() * (elevation / cap), dtype=jp.float32))
+    return model.tree_replace({"hfield_data": data})
+
+
 def perturbed_model(env: Any, param: str, level: float) -> Any:
     """A copy of the env's MJX model with one parameter altered."""
+    if param == "slope_deg":
+        return terrain_model(env, slope_deg=level)
+    if param == "terrain_amplitude":
+        return terrain_model(env, amplitude=level)
     model = env.mjx_model
     torso = env._torso_body_id
     if param == "payload_kg":

@@ -1,0 +1,56 @@
+# Terrain-curriculum ERFI study on Go1 with the v3 observation (q* - q history): every (condition, seed) is trained
+# in four stages of increasing heightfield relief, each stage initialised from the
+# previous one. Same six conditions, seeds, torque limits and protocol as v1; the
+# reward and critic are the v1 defaults; the observation is v3's (history_target_error).
+# Stages of 75 M = 300 M total, the budget of the redo studies.
+#
+#   python scripts/train_curriculum.py --config configs/experiment/erfi_study_curr_v3.yaml
+#   python scripts/eval.py            --config configs/experiment/erfi_study_curr_v3.yaml --plot
+#
+# Stage 0 runs on the rough scene with zero relief (a flat heightfield, friction 1.0),
+# not on the flat_terrain scene, so friction and spawn height are constant across
+# stages and the only thing that changes is the relief. Evaluation uses the final
+# stage's terrain (0.05 m, Playground's default), so results are directly comparable
+# to erfi_study_rough_l2.5.
+#
+# To combine with the v2 recipe add under train:
+#   env_overrides: {reward_config.tracking_sigma: 0.1, erfi.critic_sees_offset: true}
+
+name: erfi_study_curr_v3
+out: erfi_study_curr_v3_l2.5      # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  robot: go1
+  task: rough_terrain
+  num_evals: 5               # per stage -> 20 curve points over the whole run
+  history_len: 7
+  policy_layers: [512, 512]
+  value_layers: [512, 256, 128]
+  symmetric_critic: false
+  rfi_lim: 2.5
+  rao_lim: 2.5
+  impl: warp
+  env_overrides:
+    history_target_error: true
+
+# Heightfield peak-to-peak relief in metres and steps per stage.
+stages:
+  - {terrain_amplitude: 0.0,   num_timesteps: 75_000_000}
+  - {terrain_amplitude: 0.015, num_timesteps: 75_000_000}
+  - {terrain_amplitude: 0.03,  num_timesteps: 75_000_000}
+  - {terrain_amplitude: 0.05,  num_timesteps: 75_000_000}
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N, friction, gravity, kp_scale]
+  levels:
+    friction: [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]

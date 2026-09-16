@@ -312,3 +312,91 @@ def test_restore_from_run_trains(tmp_path):
     assert json.loads((tmp_path / "run" / "summary.json").read_text())["init_from"] == str(src)
     # a restored (walking) policy scores far above a fresh random one even on a tiny eval
     assert out["curve"][0]["reward"] > 0.2
+
+
+# ------------------------------------------------------------------ bowl terrains
+
+def test_bowl_terrain_geometry_and_standing():
+    import numpy as np
+    from rl_locomotion.envs.terrain import height_map
+
+    env = _env("none", task="rough_terrain", terrain_shape="bowl", slope_deg=15.0)
+    hm = height_map(env.mj_model)
+    # flat disc of radius 1 m, then tan(15 deg) per metre; 3 % short because of the 7.8 cm grid
+    assert hm.sample(0.0, 0.0) == pytest.approx(0.0, abs=1e-6)
+    assert hm.sample(0.8, 0.0) == pytest.approx(0.0, abs=1e-6)
+    assert hm.sample(3.0, 0.0) == pytest.approx(np.tan(np.radians(15.0)) * 2.0, rel=0.05)
+    assert hm.sample(0.0, -3.0) == pytest.approx(hm.sample(3.0, 0.0), rel=0.05)  # radially symmetric
+    state = _run(env, 25)
+    assert float(env.get_upvector(state.data)[2]) > 0.95 and float(state.done) == 0.0
+
+
+def test_rough_bowl_adds_relief_on_top_of_slope():
+    import numpy as np
+    from rl_locomotion.envs.terrain import height_map
+
+    env = _env("none", task="rough_terrain", terrain_shape="rough_bowl", slope_deg=15.0, terrain_amplitude=0.05)
+    hm = height_map(env.mj_model)
+    xs = np.linspace(-hm.radius_x, hm.radius_x, hm.shape[1]); row = hm.heights[hm.shape[0] // 2]
+    disc = row[np.abs(xs) < 0.9]
+    assert 0.03 < disc.max() - disc.min() < 0.06          # rocky relief survives on the flat disc
+    ramp = (np.abs(xs) > 1.5) & (np.abs(xs) < 3.5)
+    slope = np.degrees(np.arctan(np.polyfit(np.abs(xs[ramp]), row[ramp], 1)[0]))
+    assert slope == pytest.approx(15.0, abs=1.0)
+    with pytest.raises(ValueError):
+        _env("none", task="rough_terrain", terrain_shape="pyramid")
+
+
+# ------------------------------------------------------- terrain protocol params
+
+def test_terrain_params_are_traced_heightfield_data():
+    import numpy as np
+    from rl_locomotion.envs.terrain import height_map
+
+    cfg = perturb.eval_env_config(erfi.condition_config("none", task="rough_terrain", terrain_shape="rough_bowl",
+                                                        slope_deg=10.0), impl="jax")
+    assert cfg.hfield_elevation_cap == 8.0
+    env = erfi.load(cfg)
+    assert float(env.mj_model.hfield_size[0, 2]) == 8.0          # fixed elevation
+    assert env.terrain_amplitude == pytest.approx(0.05)          # relief read from config, not the rim
+    assert perturb.nominal_value(env, "slope_deg") == 10.0
+    assert perturb.nominal_value(env, "terrain_amplitude") == pytest.approx(0.05)
+    # a steeper bowl only changes hfield_data; sizes (static in MJX) are untouched
+    m30 = perturb.perturbed_model(env, "slope_deg", 30.0)
+    assert np.allclose(np.asarray(m30.hfield_size), np.asarray(env.mjx_model.hfield_size))
+    d0, d30 = np.asarray(env.mjx_model.hfield_data), np.asarray(m30.hfield_data)
+    assert d30.max() > d0.max() * 2                                # 30 deg rim ~5.2 m vs 10 deg ~1.6 m
+    assert d30.max() * 8.0 < 8.0 + 1e-6                            # within the cap
+    with pytest.raises(ValueError):
+        perturb.perturbed_model(env, "slope_deg", 45.0)          # rim 9 m > cap
+    # relief sweep keeps the slope: heights at 3 m differ by at most the relief change
+    a10 = np.asarray(perturb.perturbed_model(env, "terrain_amplitude", 0.10).hfield_data) * 8.0
+    hm0 = height_map(env.mj_model)
+    idx = hm0.shape[0] // 2, int((3.0 + hm0.radius_x) / (2 * hm0.radius_x) * (hm0.shape[1] - 1))
+    assert abs(a10.reshape(hm0.shape)[idx] - hm0.heights[idx]) < 0.06
+    # flat-terrain env cannot take terrain params
+    with pytest.raises(ValueError):
+        perturb.perturbed_model(erfi.load(perturb.eval_env_config(erfi.condition_config("none"), impl="jax")), "slope_deg", 10.0)
+
+
+def test_terrain_protocol_runs_batched():
+    cfg = perturb.eval_env_config(erfi.condition_config("none", task="rough_terrain", terrain_shape="bowl"), impl="jax")
+    env = erfi.load(cfg)
+    spec = perturb.EvalSpec(n_episodes=2, duration_s=0.4, params=("slope_deg", "terrain_amplitude"),
+                            levels={"slope_deg": [0.0, 20.0], "terrain_amplitude": [0.05]})
+    df = perturb.evaluate_policy(env, lambda o, k: (ZERO, None), spec, verbose=False, meta={"condition": "none", "seed": 0})
+    assert list(df["param"]) == ["slope_deg", "slope_deg", "terrain_amplitude"]
+    assert (df["success_rate"] == 0).all() and df["progress_m"].abs().max() < 0.5
+
+
+def test_curriculum_v3_config():
+    import yaml
+    from rl_locomotion.training import ppo
+
+    c = yaml.safe_load(Path("configs/experiment/erfi_study_curr_v3.yaml").read_text())
+    assert c["out"] == "erfi_study_curr_v3_l2.5"
+    assert sum(s["num_timesteps"] for s in c["stages"]) == 300_000_000
+    assert [s["terrain_amplitude"] for s in c["stages"]] == [0.0, 0.015, 0.03, 0.05]
+    spec = ppo.TrainSpec(condition="rao", seed=0, terrain_amplitude=0.015, num_timesteps=1, **c["train"])
+    cfg = ppo.env_config(spec)
+    assert cfg.history_target_error is True and cfg.task == "rough_terrain" and cfg.terrain_shape == "playground"

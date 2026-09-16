@@ -147,3 +147,89 @@ def terrain_table(env_names: list[str] | None = None) -> Any:
         rows.append({"env": name, **hmap.summary()})
 
     return pd.DataFrame(rows).set_index("env") if rows else pd.DataFrame()
+
+
+# ------------------------------------------------------------------ generators
+
+def make_bowl(
+    nrow: int = 256,
+    ncol: int = 256,
+    radius_m: float = 10.0,
+    slope_deg: float = 10.0,
+    flat_radius_m: float = 1.0,
+) -> tuple[np.ndarray, float]:
+    """A bowl: flat disc (radius 1 m, so the +-0.5 m spawn jitter stays on it), then a constant slope in every direction.
+
+        h(r) = tan(slope) * max(0, r - flat_radius)
+
+    A robot spawned at the centre walks uphill at `slope_deg` whatever its
+    heading, which is what makes this usable with Playground's random-yaw reset.
+    Returns (heights normalised to [0, 1] as MuJoCo stores them, elevation in
+    metres = the height at the rim). slope_deg = 0 gives a flat field with
+    elevation 0.
+    """
+    if slope_deg < 0:
+        raise ValueError("slope_deg must be >= 0")
+    ys, xs = np.meshgrid(
+        np.linspace(-radius_m, radius_m, nrow), np.linspace(-radius_m, radius_m, ncol), indexing="ij"
+    )
+    r = np.hypot(xs, ys)
+    heights = np.tan(np.radians(slope_deg)) * np.clip(r - flat_radius_m, 0.0, None)
+    elevation = float(heights.max())
+    normalised = heights / elevation if elevation > 0 else np.zeros_like(heights)
+    return normalised.astype(np.float32), elevation
+
+
+def apply_heightfield(model: Any, heights01: np.ndarray, elevation: float, index: int = 0) -> None:
+    """Write a normalised height grid and its elevation into `model` (mujoco.MjModel) in place."""
+    nrow, ncol = int(model.hfield_nrow[index]), int(model.hfield_ncol[index])
+    if heights01.shape != (nrow, ncol):
+        raise ValueError(f"heights must be {(nrow, ncol)}, got {heights01.shape}")
+    start = int(model.hfield_adr[index])
+    model.hfield_data[start : start + nrow * ncol] = heights01.ravel()
+    model.hfield_size[index, 2] = elevation
+
+
+def combine_heightfields(*fields: tuple[np.ndarray, float]) -> tuple[np.ndarray, float]:
+    """Sum heightfields given as (normalised grid, elevation) pairs; returns the same form.
+
+    Used for rough + bowl: Playground's rocky relief (normalised grid x 0.05 m)
+    added on top of the bowl slope. Grids must share a shape.
+    """
+    total = None
+    for grid, elevation in fields:
+        metres = np.asarray(grid, dtype=np.float64) * float(elevation)
+        total = metres if total is None else total + metres
+    assert total is not None
+    elevation = float(total.max())
+    normalised = total / elevation if elevation > 0 else np.zeros_like(total)
+    return normalised.astype(np.float32), elevation
+
+
+def build_terrain(
+    base: tuple[np.ndarray, float] | None,
+    shape: str,
+    amplitude: float,
+    slope_deg: float,
+    nrow: int,
+    ncol: int,
+    radius_m: float,
+) -> tuple[np.ndarray, float]:
+    """(normalised grid, elevation in m) for a terrain shape.
+
+    base: the scene's own rocky field as (normalised grid, elevation); needed for
+    "playground" and "rough_bowl". "playground" = rocky field scaled to
+    `amplitude`; "bowl" = smooth bowl at `slope_deg`; "rough_bowl" = bowl plus
+    rocky relief of `amplitude`.
+    """
+    if shape == "bowl":
+        return make_bowl(nrow, ncol, radius_m, slope_deg=slope_deg)
+    if base is None:
+        raise ValueError(f"terrain shape {shape!r} needs the scene's heightfield")
+    rocky_grid, _ = base
+    if shape == "playground":
+        return rocky_grid.astype(np.float32), float(amplitude)
+    if shape == "rough_bowl":
+        bowl = make_bowl(nrow, ncol, radius_m, slope_deg=slope_deg)
+        return combine_heightfields(bowl, (rocky_grid, float(amplitude)))
+    raise ValueError(f"unknown terrain shape {shape!r}")

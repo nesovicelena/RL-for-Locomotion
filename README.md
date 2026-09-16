@@ -87,6 +87,19 @@ python scripts/train_curriculum.py --config configs/experiment/erfi_study_curr.y
 python scripts/eval.py             --config configs/experiment/erfi_study_curr.yaml --plot
 ```
 
+Terrain evaluation suites (any study, any policy; the terrain is rebuilt inside the
+compiled protocol rollout): smooth bowl and rough bowl at 0/10/20/30° uphill, rocky
+relief 5 to 10 cm, and the paper's five sweeps on a 10° rough bowl:
+
+```bash
+RL_EXPERIMENTS_DIR=/workspace/experiments/redo python scripts/eval_terrain.py            # all studies, all suites
+python scripts/eval_terrain.py --studies erfi_study_v3_rough_l2.5 --suites bowl_slope   # subset
+python docs/report/make_erfi_figures.py redo/erfi_study_v3_rough_l2.5 redo_v3_rough bowl_slope
+```
+
+Terrain shapes are a config matter (`terrain_shape`: `playground` | `bowl` | `rough_bowl`,
+with `slope_deg` and `terrain_amplitude`); `envs/terrain.py` builds them.
+
 Robot and terrain are stored in each run's `env_config.json`, so evaluation
 always rebuilds the model and scene the policy was trained on. Outputs land in
 separate directories: `erfi_study_l2.5`, `erfi_study_rough_l2.5`,

@@ -159,6 +159,20 @@ def default_config(robot: str = "go1") -> config_dict.ConfigDict:
     # Ignored on flat_terrain. Applied by rescaling hfield_size[2] after the
     # model is built, so the same heightfield shape is used at every amplitude.
     cfg.terrain_amplitude = 0.05
+    # Shape of the rough-terrain heightfield: "playground" (the rocky field
+    # shipped with Go1JoystickRoughTerrain, relief = terrain_amplitude) or
+    # "bowl" (flat 1 m disc, then a constant uphill slope of `slope_deg` in
+    # every direction; see envs/terrain.make_bowl), or "rough_bowl" (the bowl
+    # with the rocky relief of `terrain_amplitude` added on top). Ignored on
+    # flat_terrain.
+    cfg.terrain_shape = "playground"
+    cfg.slope_deg = 10.0
+    # If > 0, the heightfield's elevation is fixed at this many metres and the
+    # terrain is encoded in the normalised height data instead. MJX keeps the
+    # elevation static but the data traced, so this is what lets the evaluation
+    # protocol sweep slope and relief inside one compiled rollout. 0 = off
+    # (elevation = the terrain's own height, as Playground does).
+    cfg.hfield_elevation_cap = 0.0
     # Paper: 7-step history of joint position errors and joint velocities.
     # (Berkeley's config already carries an unused `history_len = 1`; overwritten.)
     cfg.history_len = 7
@@ -291,14 +305,39 @@ class _ERFIMixin:
         self._config.naconmax = max(self._config.naconmax, wanted_naconmax)
         self._config.njmax = max(self._config.njmax, wanted_njmax)
         self._task = cfg_task
-        amp = float(self._config.get("terrain_amplitude", 0.05))
-        if cfg_task == "rough_terrain" and abs(amp - float(self._mj_model.hfield_size[0, 2])) > 1e-9:
+        # The scene's own heightfield (Playground's rocky relief) as a normalised
+        # grid + elevation, kept so the evaluation protocol can rebuild any
+        # terrain shape / slope / relief from it (eval/perturb.terrain_model).
+        self._base_hfield = None
+        if cfg_task == "rough_terrain":
+            from rl_locomotion.envs.terrain import height_map as _hm
+
+            base = _hm(self._mj_model)
+            self._base_hfield = (
+                (base.heights / base.elevation if base.elevation > 0 else base.heights).astype("float32"),
+                float(base.elevation),
+            )
+            shape = self._config.get("terrain_shape", "playground")
+            from rl_locomotion.envs.terrain import apply_heightfield, build_terrain
+
+            amp = float(self._config.get("terrain_amplitude", 0.05))
             if amp < 0:
                 raise ValueError("terrain_amplitude must be >= 0")
-            # hfield_size = (radius_x, radius_y, elevation, base_depth); heights
-            # are stored normalised to [0, 1] and scaled by the elevation.
-            self._mj_model.hfield_size[0, 2] = amp
-            self._mjx_model = mjx.put_model(self._mj_model, impl=self._config.impl)
+            if shape not in ("playground", "bowl", "rough_bowl"):
+                raise ValueError(f"terrain_shape must be 'playground', 'bowl' or 'rough_bowl', got {shape!r}")
+            m = self._mj_model
+            grid, elevation = build_terrain(
+                self._base_hfield, shape, amplitude=amp, slope_deg=float(self._config.get("slope_deg", 10.0)),
+                nrow=int(m.hfield_nrow[0]), ncol=int(m.hfield_ncol[0]), radius_m=float(m.hfield_size[0, 0]),
+            )
+            cap = float(self._config.get("hfield_elevation_cap", 0.0))
+            if cap > 0:
+                if elevation > cap + 1e-9:
+                    raise ValueError(f"terrain rises {elevation:.2f} m, above hfield_elevation_cap={cap}")
+                grid, elevation = (grid * (elevation / cap)).astype("float32"), cap
+            if shape != "playground" or cap > 0 or abs(elevation - float(m.hfield_size[0, 2])) > 1e-9:
+                apply_heightfield(m, grid, elevation)
+                self._mjx_model = mjx.put_model(m, impl=self._config.impl)
         mode = self._config.erfi.mode
         if mode not in MODES:
             raise ValueError(f"erfi.mode must be one of {MODES}, got {mode!r}")
@@ -346,10 +385,17 @@ class _ERFIMixin:
 
     @property
     def terrain_amplitude(self) -> float:
-        """Peak-to-peak relief of the heightfield in metres (0.0 on flat terrain)."""
+        """Peak-to-peak relief of the rocky field in metres (0.0 on flat terrain or a smooth bowl).
+
+        On bowl shapes the heightfield's elevation is the rim height, so the
+        relief is read from the config instead.
+        """
         if self._task != "rough_terrain":
             return 0.0
-        return float(self._mj_model.hfield_size[0, 2])
+        shape = self._config.get("terrain_shape", "playground")
+        if shape == "bowl":
+            return 0.0
+        return float(self._config.get("terrain_amplitude", 0.05))
 
     @property
     def floor_friction(self) -> float:
