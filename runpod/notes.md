@@ -36,8 +36,10 @@ bash runpod/bootstrap.sh
 
 ## Gotchas
 
-- **Only `/workspace` survives a pod stop.** Everything else is wiped. This is
-  why `experiments/` is symlinked there.
+- **Only `/workspace` survives a pod stop, and only if it is a network volume.**
+  A pod without one lost the whole `redo` tree on 2026-09-16. Attach a network
+  volume at `/workspace` when creating the pod, and rsync results back after
+  every finished study, not at the end.
 - **`MUJOCO_GL=egl`** for headless rendering. Without it, video rendering fails
   with an obscure GLFW error.
 - **Stop the pod when idle.** Billing is per-hour and a forgotten pod is the
@@ -49,4 +51,5 @@ bash runpod/bootstrap.sh
 
 | Date | GPU | What was run | Outcome |
 |---|---|---|---|
-| | | | |
+| 2026-09-15/16 | RTX 4090 | `run_all_studies.sh` (v1, v2, v3 x flat/rough, 300 M) | 5 studies finished and pulled; pod evicted during v3 rough (2/18). No network volume, disk lost. |
+| 2026-09-16 | | `run_resume_and_terrain.sh` on a new pod | resume v3 rough, curriculum v3, terrain suites |
