@@ -30,8 +30,8 @@ train:
   policy_layers: [512, 512]    # paper (blind A1)
   value_layers: [512, 256, 128]
   symmetric_critic: false
-  rfi_lim: [2.0, 2.0, 3.0, 3.0, 2.0, 0.5, 2.0, 2.0, 3.0, 3.0, 2.0, 0.5]   # PROVISIONAL, see above
-  rao_lim: [2.0, 2.0, 3.0, 3.0, 2.0, 0.5, 2.0, 2.0, 3.0, 3.0, 2.0, 0.5]   # PROVISIONAL, see above
+  rfi_lim: [3.032, 2.052, 2.359, 3.717, 2.863, 0.158, 3.032, 2.052, 2.359, 3.717, 2.863, 0.158]   # measured 2026-09-16: 0.5 x RMS actuator force of none/seed0 (rough), 50 x 8 s, 3.49 m nominal
+  rao_lim: [3.032, 2.052, 2.359, 3.717, 2.863, 0.158, 3.032, 2.052, 2.359, 3.717, 2.863, 0.158]   # measured 2026-09-16: 0.5 x RMS actuator force of none/seed0 (rough), 50 x 8 s, 3.49 m nominal
   impl: warp
   env_overrides:
     erfi.critic_sees_offset: true

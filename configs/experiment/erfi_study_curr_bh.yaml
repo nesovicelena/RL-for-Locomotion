@@ -1,0 +1,75 @@
+# Terrain-curriculum ERFI study on the Berkeley Humanoid: every (condition, seed)
+# is trained in four stages of increasing heightfield relief, each stage
+# initialised from the previous one's parameters. Same six conditions, seeds,
+# torque limits, recipe and protocol as erfi_study_bh_rough.yaml; only the
+# terrain schedule differs, so the two are directly comparable.
+#
+#   python scripts/train_curriculum.py --config configs/experiment/erfi_study_curr_bh.yaml
+#   python scripts/eval.py             --config configs/experiment/erfi_study_curr_bh.yaml --plot
+#   python scripts/eval_terrain.py     --studies erfi_study_curr_bh
+#
+# Stage 0 runs on the rough scene with zero relief (a flat heightfield, friction
+# 1.0, spawn 0.56 m), not on the flat_terrain scene, so friction and spawn height
+# are constant across stages and relief is the only thing that changes. Evaluation
+# uses the final stage's terrain (0.05 m, Playground's default), so results line up
+# with erfi_study_bh_rough.
+#
+# Budget: 4 x 50 M = 200 M, matching erfi_study_bh_rough. The humanoid trains at
+# roughly 22 min per 200 M on an RTX 4090, so one full sweep is about 7 h.
+#
+# Why this is worth running on a biped: the flat and rough humanoid studies both
+# produced 3/3 walking seeds in every condition, so the curriculum cannot be
+# judged on learning reliability the way the Go1 one was. The question here is
+# whether staged relief buys robustness at the 5 cm terrain and beyond
+# (scripts/eval_terrain.py, rough_relief suite).
+
+name: erfi_study_curr_bh
+out: erfi_study_curr_bh          # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  robot: bh
+  task: rough_terrain
+  num_evals: 5                 # per stage -> 20 curve points over the whole run
+  history_len: 7               # 196-dim policy input (192 + the task's 4-dim gait clock)
+  policy_layers: [512, 512]
+  value_layers: [512, 256, 128]
+  symmetric_critic: false
+  # measured 2026-09-16: 0.5 x RMS actuator force of none/seed0 (rough), 50 x 8 s.
+  # Identical to erfi_study_bh_rough.yaml so the curriculum is comparable to it.
+  rfi_lim: [3.032, 2.052, 2.359, 3.717, 2.863, 0.158, 3.032, 2.052, 2.359, 3.717, 2.863, 0.158]
+  rao_lim: [3.032, 2.052, 2.359, 3.717, 2.863, 0.158, 3.032, 2.052, 2.359, 3.717, 2.863, 0.158]
+  impl: warp
+  env_overrides:
+    erfi.critic_sees_offset: true
+    history_target_error: true
+
+# Heightfield peak-to-peak relief in metres and steps per stage.
+stages:
+  - {terrain_amplitude: 0.0,   num_timesteps: 50_000_000}
+  - {terrain_amplitude: 0.015, num_timesteps: 50_000_000}
+  - {terrain_amplitude: 0.03,  num_timesteps: 50_000_000}
+  - {terrain_amplitude: 0.05,  num_timesteps: 50_000_000}
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N_sagittal, push_N_lateral, friction, gravity, kp_scale]
+  # Payload as a fraction of the 16.06 kg total mass, pushes as a fraction of the
+  # weight m g = 157.5 N. The completed studies saturate above 0.20 of weight, so
+  # the push grid stops at 0.24 and is finer below it.
+  level_fractions:
+    payload_kg: [0.0, 0.025, 0.05, 0.075, 0.10, 0.15, 0.20]
+    push_N_sagittal: [0.0, 0.03, 0.06, 0.09, 0.12, 0.16, 0.20, 0.24]
+    push_N_lateral: [0.0, 0.03, 0.06, 0.09, 0.12, 0.16, 0.20, 0.24]
+  levels:
+    friction: [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]   # rough scene trains at 1.0
+  low_base_fraction: 0.5
+  nominal_reset: true

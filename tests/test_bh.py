@@ -19,8 +19,20 @@ from rl_locomotion.envs import bh, erfi
 from rl_locomotion.eval import perturb
 from rl_locomotion.training import ppo
 
-GOLDEN = Path(__file__).parent / "golden" / "erfi_go1_a1_obs.npz"
+REPO = Path(__file__).resolve().parent.parent
+GOLDEN = REPO / "tests" / "golden" / "erfi_go1_a1_obs.npz"
 NU = 12
+
+
+def _eval_terrain():
+    """The scripts/ module, which is not an installed package."""
+    import sys
+
+    if str(REPO / "scripts") not in sys.path:
+        sys.path.insert(0, str(REPO / "scripts"))
+    import eval_terrain
+
+    return eval_terrain
 
 
 def _bh(condition="none", **overrides):
@@ -272,6 +284,72 @@ def test_nominal_reset_starts_from_the_keyframe_at_rest(flat, flat_state):
     assert perturb.EvalSpec().nominal_reset is False  # Go1 protocol unchanged
 
 
+def test_curriculum_config_builds_every_stage():
+    """Each stage of the humanoid curriculum yields a valid env at its own relief."""
+    import yaml
+
+    cfg = yaml.safe_load((REPO / "configs/experiment/erfi_study_curr_bh.yaml").read_text())
+    train, stages = dict(cfg["train"], impl="jax"), cfg["stages"]
+    assert train["robot"] == "bh" and train["task"] == "rough_terrain"
+    assert [s["terrain_amplitude"] for s in stages] == [0.0, 0.015, 0.03, 0.05]
+    assert sum(s["num_timesteps"] for s in stages) == 200_000_000  # same budget as erfi_study_bh_rough
+    for i, st in enumerate(stages):
+        spec = ppo.TrainSpec(condition="erfi_50", seed=0, init_from="prev" if i else None,
+                             terrain_amplitude=st["terrain_amplitude"],
+                             num_timesteps=st["num_timesteps"], **train)
+        env = erfi.load(ppo.env_config(spec))
+        assert env.robot == "bh" and env.task == "rough_terrain"
+        assert env.terrain_amplitude == pytest.approx(st["terrain_amplitude"])
+        # friction and spawn height are constant across stages; only relief changes
+        assert env.floor_friction == pytest.approx(1.0)
+        assert env.spawn_height == pytest.approx(0.56)
+        assert env.observation_size["state"] == (196,)
+        assert len(env.rfi_lim) == NU
+
+
+def test_terrain_suites_are_adjusted_for_the_humanoid():
+    eval_terrain = _eval_terrain()
+
+    for suite in eval_terrain.SUITES:
+        go1 = eval_terrain.spec_for(suite, "go1", 50)
+        bh = eval_terrain.spec_for(suite, "bh", 50)
+        # Go1 is untouched by the humanoid entry.
+        assert go1.params == tuple(eval_terrain.SUITES[suite]["params"])
+        assert go1.low_base_fraction is None and go1.nominal_reset is False
+        # The humanoid always gets the kneeling flag and the keyframe start.
+        assert bh.low_base_fraction == 0.5 and bh.nominal_reset is True
+        assert "push_N" not in bh.params
+    # The random push direction is replaced by the two named axes.
+    prot = eval_terrain.spec_for("rough_bowl_protocol", "bh", 50)
+    assert "push_N_sagittal" in prot.params and "push_N_lateral" in prot.params
+    assert prot.params.index("push_N_sagittal") + 1 == prot.params.index("push_N_lateral")
+    # Payload and push are fractions of this robot's own mass; friction stays absolute.
+    assert set(prot.level_fractions) == {"payload_kg", "push_N_sagittal", "push_N_lateral"}
+    assert "friction" in prot.levels and "payload_kg" not in prot.levels
+    # Slope and relief grids straddle where this robot actually fails.
+    assert eval_terrain.spec_for("bowl_slope", "bh", 50).levels["slope_deg"] == [0.0, 2.5, 5.0, 7.5, 10.0, 15.0]
+    assert eval_terrain.spec_for("rough_relief", "bh", 50).levels["terrain_amplitude"] == [0.05, 0.075, 0.10, 0.125, 0.15]
+
+
+@pytest.mark.parametrize("shape", ["bowl", "rough_bowl"])
+def test_humanoid_builds_and_steps_on_bowl_terrain(shape):
+    cfg = erfi.condition_config("erfi_50", robot="bh", task="rough_terrain")
+    cfg.terrain_shape, cfg.slope_deg = shape, 10.0
+    env = erfi.load(perturb.eval_env_config(cfg, impl="jax"))
+    assert float(env._config.hfield_elevation_cap) > 0  # needed to trace slope levels
+    state = jax.jit(env.reset)(jax.random.PRNGKey(0))
+    state = jax.jit(env.step)(state, jp.zeros(NU))
+    assert bool(jp.all(jp.isfinite(state.obs["state"])))
+    # every swept level yields a traced model within the elevation cap
+    prev = None
+    for slope in [0.0, 2.5, 5.0, 7.5, 10.0, 15.0]:
+        model = perturb.terrain_model(env, slope_deg=slope)
+        top = float(jp.max(model.hfield_data))
+        if prev is not None:
+            assert top > prev  # a steeper bowl is a taller heightfield
+        prev = top
+
+
 def test_eval_spec_rejects_unknown_params():
     with pytest.raises(ValueError, match="unknown protocol parameter"):
         perturb.EvalSpec(params=("payload_kg", "push_N_diagonal"))
@@ -308,5 +386,9 @@ def test_go1_defaults_and_protocol_levels_unchanged():
     assert cfg.robot == "go1" and cfg.erfi.rfi_lim == 7.0 and cfg.history_len == 7
     assert perturb.PROTOCOL["payload_kg"][0] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
     assert perturb.PROTOCOL["push_N"][0] == [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0]
-    assert perturb.EvalSpec().params == tuple(perturb.PROTOCOL)
+    # The default protocol stays the paper's five sweeps: the push axes and the
+    # terrain parameters are opt-in, never picked up by an existing config.
+    assert perturb.EvalSpec().params == perturb.STANDARD_PARAMS
+    assert perturb.STANDARD_PARAMS == ("payload_kg", "push_N", "friction", "gravity", "kp_scale")
     assert perturb.EvalSpec().low_base_fraction is None
+    assert perturb.EvalSpec().nominal_reset is False

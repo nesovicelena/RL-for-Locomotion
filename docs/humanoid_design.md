@@ -590,3 +590,71 @@ python scripts/eval.py --config $CFG --terrain-amplitude 0.10 --plot   # 10 cm r
 ```bash
 rsync -avz --progress --exclude 'params_0*' -e 'ssh -p <port>' root@<ip>:/workspace/experiments/redo/ experiments/redo/
 ```
+
+---
+
+## 10. Terrain curriculum and terrain evaluation (added after the first two studies)
+
+The flat and rough studies both produced walking policies in 3 of 3 seeds for
+every condition, so the curriculum cannot be judged on learning reliability the
+way the Go1 one was (`docs/eval_design.md` D4). Its question here is whether
+staged relief buys robustness at and beyond the 5 cm training terrain.
+
+### 10.1 Curriculum
+
+`configs/experiment/erfi_study_curr_bh.yaml`, run by the existing
+`scripts/train_curriculum.py`, which needed no change: it reads `robot` from the
+config and passes it into `TrainSpec` like every other field. Four stages of
+50 M steps at relief 0, 1.5, 3 and 5 cm, each initialised from the previous
+stage's parameters. Total 200 M, the same budget as `erfi_study_bh_rough`, with
+the same conditions, seeds, recipe and measured torque vector, so the two are
+directly comparable. Stage 0 runs on the rough scene at zero relief rather than
+the flat scene, so friction (1.0) and spawn height (0.56 m) are constant across
+stages and relief is the only variable. Verified per stage in `tests/test_bh.py`.
+
+### 10.2 Torque limits backfilled
+
+Both `erfi_study_bh*.yaml` carried the provisional vector; the measured one
+existed only in `env_config.json` on the pod. Both configs now hold the measured
+vector with its provenance, read back from
+`erfi_study_bh_rough/none/seed0/stance_torque.json` (0.5 x RMS actuator force,
+50 episodes of 8 s, that policy walking 3.49 m at nominal).
+
+### 10.3 Terrain suites
+
+`scripts/eval_terrain.py` is now robot-aware through `ROBOT_ADJUST`. Go1 and A1
+keep their levels byte for byte; the Berkeley Humanoid gets:
+
+- the two named push axes instead of one random direction, because the completed
+  studies order the conditions oppositely on the two axes (Section 11);
+- payload and push as fractions of its own mass and weight;
+- the kneeling fall flag and the keyframe-at-rest start, as in the main protocol;
+- slope and relief grids placed where this robot actually fails, measured on
+  `erfi_study_bh_rough/erfi_50/seed0` under the protocol's own 8 s criterion:
+
+| sweep | success by level | grid chosen | Go1's grid |
+|---|---|---|---|
+| bowl slope (deg) | 1.0 at 0 and 5, 0.0 from 10 | 0, 2.5, 5, 7.5, 10, 15 | 0, 10, 20, 30 |
+| relief (m) | 1.0 at 0.05, 0.67 at 0.075, 0.33 at 0.10, 0.0 from 0.125 | 0.05, 0.075, 0.10, 0.125, 0.15 | 0.05, 0.07, 0.08, 0.09, 0.10 |
+
+Go1's slope grid would have shown only the cliff on this robot, and its relief
+grid stops before the humanoid's failure point.
+
+### 10.4 Pod commands
+
+```bash
+export RL_EXPERIMENTS_DIR=/workspace/experiments/redo
+
+# curriculum: 18 runs x 4 stages, about 7 h; finished stages are skipped on restart
+python scripts/train_curriculum.py --config configs/experiment/erfi_study_curr_bh.yaml
+python scripts/eval.py             --config configs/experiment/erfi_study_curr_bh.yaml --plot
+
+# terrain suites on the three humanoid studies (about 1 h each)
+python scripts/eval_terrain.py --studies erfi_study_bh_rough erfi_study_bh erfi_study_curr_bh
+
+# one suite only
+python scripts/eval_terrain.py --studies erfi_study_curr_bh --suites rough_relief
+```
+
+Each suite writes `results_<suite>.csv`, `summary_success_rate_<suite>.csv` and
+three PNGs into the study directory, and skips runs it has already evaluated.
