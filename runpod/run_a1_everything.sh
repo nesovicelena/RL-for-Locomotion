@@ -110,18 +110,28 @@ if [ "${SMOKE:-0}" = "1" ]; then
     python scripts/train_curriculum.py --config "${CURR_CFG}" --conditions none --seeds 0 --smoke \
         > "${LOGS}/smoke_a1_curr.log" 2>&1 \
         && note "     stage 2 smoke ok" || note "FAIL stage 2 smoke (see ${LOGS}/smoke_a1_curr.log)"
-    # Stage 3/4 need a trained policy; use a Go1 study if the A1 ones are empty,
-    # since the suites are robot-agnostic and this only checks the plumbing.
-    probe=erfi_study_a1_v3_rough_l2.5
-    [ "$(count_finished ${probe})" = "0" ] && probe=erfi_study_v3_rough_l2.5
-    python scripts/eval_terrain.py --studies "${probe}" \
-        --suites bowl_slope rough_relief bowl_slope_fine combined_bowl \
-        --n-episodes 2 --force > "${LOGS}/smoke_a1_suites.log" 2>&1 \
-        && note "     stages 3-4 smoke ok on ${probe}" || note "FAIL stages 3-4 smoke (see ${LOGS}/smoke_a1_suites.log)"
-    rm -f "${ROOT}/${probe}"/results_bowl_slope.csv "${ROOT}/${probe}"/summary_*_bowl_slope.csv \
-          "${ROOT}/${probe}"/results_rough_relief.csv "${ROOT}/${probe}"/summary_*_rough_relief.csv \
-          "${ROOT}/${probe}"/results_bowl_slope_fine.csv "${ROOT}/${probe}"/summary_*_bowl_slope_fine.csv \
-          "${ROOT}/${probe}"/results_combined_bowl.csv "${ROOT}/${probe}"/summary_*_combined_bowl.csv
+    # Stage 3/4 need a trained policy. Prefer an A1 study, fall back to a Go1 one
+    # (the suites are robot-agnostic; this only checks the plumbing). On a fresh
+    # pod there is no policy at all, and eval_terrain.py would exit 0 having
+    # evaluated nothing -- say so rather than report a pass that tested nothing.
+    probe=""
+    for candidate in erfi_study_a1_v3_rough_l2.5 erfi_study_a1_rough_l2.5 erfi_study_v3_rough_l2.5 erfi_study_rough_l2.5; do
+        if [ "$(count_finished "${candidate}")" != "0" ]; then probe="${candidate}"; break; fi
+    done
+    if [ -z "${probe}" ]; then
+        note "     stages 3-4 smoke SKIPPED: no trained policy in ${ROOT} yet (expected on a fresh pod;"
+        note "       the suites are exercised by tests/test_erfi.py and tests/test_a1.py, and will run"
+        note "       for real after stage 1)"
+    else
+        python scripts/eval_terrain.py --studies "${probe}" \
+            --suites bowl_slope rough_relief bowl_slope_fine combined_bowl \
+            --n-episodes 2 --force > "${LOGS}/smoke_a1_suites.log" 2>&1 \
+            && note "     stages 3-4 smoke ok on ${probe}" || note "FAIL stages 3-4 smoke (see ${LOGS}/smoke_a1_suites.log)"
+        # the 2-episode CSVs would otherwise be mistaken for real results
+        for suite in bowl_slope rough_relief bowl_slope_fine combined_bowl; do
+            rm -f "${ROOT}/${probe}/results_${suite}.csv" "${ROOT}/${probe}"/summary_*_"${suite}".csv
+        done
+    fi
     note "==== smoke done"
     exit 0
 fi
