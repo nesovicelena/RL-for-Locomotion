@@ -60,6 +60,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--height", type=int, default=540)
     p.add_argument("--task", choices=list(erfi.TASKS), help="override the training terrain")
     p.add_argument("--terrain-amplitude", type=float, help="override heightfield relief (m), rough terrain only")
+    p.add_argument("--terrain-shape", choices=("playground", "bowl", "rough_bowl"),
+                   help="override terrain shape, rough terrain only")
+    p.add_argument("--slope-deg", type=float, help="bowl slope (deg), with --terrain-shape bowl / rough_bowl")
     p.add_argument("--seed", type=int, default=0, help="reset seed (spawn pose and velocity)")
     p.add_argument("--checkpoint", default="params_final")
     p.add_argument("--out", type=Path)
@@ -74,6 +77,10 @@ def main() -> None:
         overrides["task"] = args.task
     if args.terrain_amplitude is not None:
         overrides["terrain_amplitude"] = args.terrain_amplitude
+    if args.terrain_shape:
+        overrides["terrain_shape"] = args.terrain_shape
+    if args.slope_deg is not None:
+        overrides["slope_deg"] = args.slope_deg
     cfg = perturb.eval_env_config(ppo.load_env_config(run, **overrides), impl="jax")
     env = erfi.load(cfg)
     policy = ppo.load_policy(run, env, checkpoint=args.checkpoint)
@@ -113,6 +120,10 @@ def main() -> None:
         suffix = f"_{args.task}" if args.task else ""
         if args.terrain_amplitude is not None:
             suffix += f"_a{args.terrain_amplitude:.3f}"
+        if args.terrain_shape:
+            suffix += f"_{args.terrain_shape}"
+        if args.slope_deg is not None:
+            suffix += f"_{args.slope_deg:g}deg"
         args.out = REPO / "experiments" / "videos" / f"{study}_{run.parent.name}_{run.name}{suffix}.mp4"
     args.out.parent.mkdir(parents=True, exist_ok=True)
     media.write_video(str(args.out), frames, fps=fps)

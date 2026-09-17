@@ -182,12 +182,15 @@ def eval_env_config(train_env_cfg: Any, impl: str = "jax") -> Any:
     return cfg
 
 
-def terrain_model(env: Any, slope_deg: float | None = None, amplitude: float | None = None) -> Any:
+def terrain_model(env: Any, slope_deg: float | None = None, amplitude: float | None = None,
+                  model: Any = None) -> Any:
     """The env's MJX model with its heightfield rebuilt for another slope and/or relief.
 
     Follows the env's `terrain_shape`: "playground" -> rocky field at `amplitude`;
     "bowl" -> smooth bowl at `slope_deg`; "rough_bowl" -> bowl plus rocky relief.
-    Unspecified values default to the env's own. MJX keeps the heightfield
+    Unspecified values default to the env's own; `model` defaults to the env's
+    own MJX model, and is passed explicitly when several perturbations are
+    composed. MJX keeps the heightfield
     elevation static, so the env must have been built with a fixed
     `hfield_elevation_cap` (eval_env_config sets 8 m on rough terrain); the
     terrain then lives entirely in `hfield_data`, a traced model field.
@@ -212,19 +215,24 @@ def terrain_model(env: Any, slope_deg: float | None = None, amplitude: float | N
     )
     if elevation > cap + 1e-9:
         raise ValueError(f"terrain rises {elevation:.2f} m, above hfield_elevation_cap={cap}")
-    model = env.mjx_model
+    model = env.mjx_model if model is None else model
     start = int(m.hfield_adr[0]); n = grid.size
     data = jp.asarray(model.hfield_data).at[start : start + n].set(jp.asarray(grid.ravel() * (elevation / cap), dtype=jp.float32))
     return model.tree_replace({"hfield_data": data})
 
 
-def perturbed_model(env: Any, param: str, level: float) -> Any:
-    """A copy of the env's MJX model with one parameter altered."""
+def perturbed_model(env: Any, param: str, level: float, model: Any = None) -> Any:
+    """A copy of `model` (default: the env's own) with one parameter altered.
+
+    Passing `model` composes perturbations, which is what `combined_model` does;
+    every branch below reads and rewrites only its own fields, so the order in
+    which parameters are applied does not matter.
+    """
     if param == "slope_deg":
-        return terrain_model(env, slope_deg=level)
+        return terrain_model(env, slope_deg=level, model=model)
     if param == "terrain_amplitude":
-        return terrain_model(env, amplitude=level)
-    model = env.mjx_model
+        return terrain_model(env, amplitude=level, model=model)
+    model = env.mjx_model if model is None else model
     torso = env._torso_body_id
     if param == "payload_kg":
         m0 = model.body_mass[torso]
@@ -246,6 +254,33 @@ def perturbed_model(env: Any, param: str, level: float) -> Any:
     if param in PUSH_AXES:
         return model  # applied as an external force during the rollout
     raise ValueError(f"unknown perturbation {param!r}")
+
+
+def combined_model(env: Any, combo: dict[str, float]) -> Any:
+    """The env's MJX model with every parameter in `combo` applied at once.
+
+    Push entries are skipped here (they are a force during the rollout, not a
+    model field); `push_of` reads them back out.
+    """
+    model = env.mjx_model
+    for param, level in combo.items():
+        if param in PUSH_AXES:
+            continue
+        model = perturbed_model(env, param, level, model=model)
+    return model
+
+
+def push_of(combo: dict[str, float]) -> tuple[float, int]:
+    """The (force, axis code) a combined grid point asks for; (0, 0) if it has no push."""
+    for param, level in combo.items():
+        if param in PUSH_AXES:
+            return float(level), PUSH_AXES[param]
+    return 0.0, 0
+
+
+def combo_label(combo: dict[str, float]) -> str:
+    """`{'payload_kg': 3.0, 'friction': 0.5}` -> `payload_kg=3|friction=0.5`."""
+    return "|".join(f"{k}={v:g}" for k, v in combo.items())
 
 
 def nominal_start(env: Any, state: Any) -> Any:
@@ -401,6 +436,86 @@ def evaluate_policy(
                     f"fall {row['fall_rate']:.2f}  progress {row['progress_m']:.2f} m",
                     flush=True,
                 )
+    return pd.DataFrame(rows)
+
+
+def grid_points(levels: dict[str, list[float]]) -> list[dict[str, float]]:
+    """Full factorial over `levels`, in a stable order: `{a: [1,2], b: [3,4]}` -> four dicts."""
+    points: list[dict[str, float]] = [{}]
+    for param, values in levels.items():
+        points = [{**p, param: float(v)} for p in points for v in values]
+    return points
+
+
+def evaluate_policy_grid(
+    env: Any,
+    policy: PolicyFn,
+    grid: dict[str, list[float]],
+    spec: EvalSpec | None = None,
+    seed: int = 0,
+    meta: dict[str, Any] | None = None,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """The protocol with several parameters perturbed *simultaneously*, over a full factorial grid.
+
+    `evaluate_policy` alters one parameter at a time, as the paper does. This
+    applies every combination in `grid` at once, which is what deployment looks
+    like and which separates the training conditions much more sharply (a 6 kg
+    payload alone is nearly free; 6 kg on a slippery slope while being pushed is
+    not). One row per grid point, with a column per swept parameter plus
+    `combo_id` and `combo` (the human-readable label). `param` is set to
+    "combined" and `level` to the combo index so the row schema stays
+    compatible with the one-at-a-time results.
+
+    The rollout is compiled once and reused: the model is a traced argument, so
+    the grid costs one compile plus one batched rollout per point.
+    """
+    spec = spec or EvalSpec()
+    run, _ = make_batched_rollout(env, policy, spec)
+    keys = jax.random.split(jax.random.PRNGKey(seed), spec.n_episodes)
+
+    points = grid_points(grid)
+    rows = []
+    task = getattr(env, "task", "flat_terrain")
+    robot = getattr(env, "robot", "go1")
+    mass = robot_mass(env)
+    nominals = {p: nominal_value(env, p) for p in grid}
+    for i, combo in enumerate(points):
+        model = combined_model(env, combo)
+        push, axis = push_of(combo)
+        out = jax.device_get(
+            run(model, keys, jp.asarray(push, dtype=jp.float32), jp.asarray(axis, dtype=jp.int32))
+        )
+        label = combo_label(combo)
+        # A grid point is "nominal" when every parameter sits at its training value.
+        at_nominal = all(abs(v - nominals[p]) < 1e-9 for p, v in combo.items())
+        row = {
+            **(meta or {}),
+            "robot": robot,
+            "task": task,
+            "robot_mass_kg": mass,
+            "param": "combined",
+            "level": float(i),
+            "combo_id": i,
+            "combo": label,
+            "n_perturbed": sum(abs(v - nominals[p]) > 1e-9 for p, v in combo.items()),
+            "nominal": float(at_nominal),
+            **{f"lvl_{p}": v for p, v in combo.items()},
+            "success_rate": float(np.mean(out["success"])),
+            "fall_rate": float(np.mean(out["fallen"])),
+            "low_base_rate": float(np.mean(out["low_base"])),
+            "progress_m": float(np.mean(out["progress_m"])),
+            "tracking_rmse": float(np.mean(out["tracking_rmse"])),
+            "tracking_rmse_alive": float(np.mean(out["tracking_rmse_alive"])),
+            "n_episodes": spec.n_episodes,
+        }
+        rows.append(row)
+        if verbose:
+            print(
+                f"  [{i + 1:2d}/{len(points)}] {label:42s} success {row['success_rate']:.2f}  "
+                f"fall {row['fall_rate']:.2f}  progress {row['progress_m']:.2f} m",
+                flush=True,
+            )
     return pd.DataFrame(rows)
 
 

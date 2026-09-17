@@ -313,8 +313,9 @@ def test_terrain_suites_are_adjusted_for_the_humanoid():
     for suite in eval_terrain.SUITES:
         go1 = eval_terrain.spec_for(suite, "go1", 50)
         bh = eval_terrain.spec_for(suite, "bh", 50)
-        # Go1 is untouched by the humanoid entry.
-        assert go1.params == tuple(eval_terrain.SUITES[suite]["params"])
+        # Go1 is untouched by the humanoid entry. Combined suites carry a factorial
+        # `grid` instead of one-at-a-time `params`, so theirs is empty.
+        assert go1.params == tuple(eval_terrain.SUITES[suite].get("params", ()))
         assert go1.low_base_fraction is None and go1.nominal_reset is False
         # The humanoid always gets the kneeling flag and the keyframe start.
         assert bh.low_base_fraction == 0.5 and bh.nominal_reset is True
@@ -329,6 +330,10 @@ def test_terrain_suites_are_adjusted_for_the_humanoid():
     # Slope and relief grids straddle where this robot actually fails.
     assert eval_terrain.spec_for("bowl_slope", "bh", 50).levels["slope_deg"] == [0.0, 2.5, 5.0, 7.5, 10.0, 15.0]
     assert eval_terrain.spec_for("rough_relief", "bh", 50).levels["terrain_amplitude"] == [0.05, 0.075, 0.10, 0.125, 0.15]
+    # Go1's fine sweep runs 10-26 deg; the humanoid falls by 10 deg, so its own
+    # grid replaces those levels while the longer episode is kept.
+    fine = eval_terrain.spec_for("bowl_slope_fine", "bh", 50)
+    assert fine.levels["slope_deg"] == [0.0, 2.5, 5.0, 7.5, 10.0, 15.0] and fine.duration_s == 16.0
 
 
 @pytest.mark.parametrize("shape", ["bowl", "rough_bowl"])

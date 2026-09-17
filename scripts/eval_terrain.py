@@ -9,11 +9,23 @@ it may never have seen.
 Suites (all on the rough_terrain scene, so a policy trained on flat ground is
 rebuilt on the heightfield scene; the observation is identical):
 
-    bowl_slope           smooth bowl, uphill slope 0 / 10 / 20 / 30 deg
-    rough_bowl_slope     bowl with the 5 cm rocky relief on top, same slopes
-    rough_relief         Playground's rocky field at 5 / 7 / 8 / 9 / 10 cm relief
-    rough_bowl_protocol  the paper's five sweeps (payload, push, friction, gravity, Kp)
-                         on a 10 deg rough bowl
+    bowl_slope             smooth bowl, uphill slope 0 / 10 / 20 / 30 deg
+    rough_bowl_slope       bowl with the 5 cm rocky relief on top, same slopes
+    rough_relief           Playground's rocky field at 5 / 7 / 8 / 9 / 10 cm relief
+    rough_bowl_protocol    the paper's five sweeps (payload, push, friction, gravity, Kp)
+                           on a 10 deg rough bowl
+    bowl_slope_fine        slope 10 .. 26 deg in 2 deg steps, 16 s episodes: locates the
+    rough_bowl_slope_fine  slope at which the climb rate reaches zero, which the coarse
+                           0/10/20/30 grid only brackets
+    combined_relief        payload x friction x push, all three applied *at once* (27
+    combined_bowl          points), on the 5 cm rocky field and on the 10 deg rough bowl
+
+The combined suites are not in the paper. Sweeping one parameter at a time
+understates deployment, where perturbations arrive together and interact: 6 kg
+of payload alone is nearly free on flat ground, 6 kg on a slippery slope while
+being pushed is not. They are also the sharpest discriminator between training
+conditions, because the one-at-a-time protocol saturates near 1.0 for most of
+its levels.
 
 The levels above are the quadruped ones. The robot is read from each study's own
 runs and the suite is adjusted for it (`ROBOT_ADJUST`): the Berkeley Humanoid
@@ -34,6 +46,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -54,6 +67,25 @@ DEFAULT_STUDIES = [
 
 ROUGH_FRICTION = [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]  # centred on the rough scene's 1.0
 
+# The fine slope sweep runs 16 s rather than the protocol's 8 s. At 8 s a Go1 on a
+# 20 deg bowl covers 1.4 m, of which the first 1.0 m is the flat disc at the bowl's
+# centre: only ~0.4 m of actual climbing, too little to estimate a climb rate from,
+# and the 2.5 m success threshold is unreachable at any slope above ~15 deg purely
+# for want of time. 16 s gives several times more climbing distance and makes
+# `success_rate` mean "can climb" instead of "is fast". Not comparable with the
+# 8 s suites; read it on its own (docs/eval_design.md).
+FINE_SLOPES = [10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0]
+FINE_SLOPE_SPEC = dict(duration_s=16.0)
+
+# Combined grid: payload x friction x push, applied simultaneously. Three levels
+# each (nominal / moderate / severe) = 27 points, about the size of one
+# one-at-a-time sweep. Friction levels are centred on the rough scene's 1.0.
+COMBINED_GRID: dict[str, list[float]] = {
+    "payload_kg": [0.0, 3.0, 6.0],
+    "friction": [1.0, 0.6, 0.3],
+    "push_N": [0.0, 20.0, 40.0],
+}
+
 # suite -> env overrides (on top of the run's config) and protocol spec pieces
 SUITES: dict[str, dict] = {
     "bowl_slope": dict(
@@ -71,6 +103,24 @@ SUITES: dict[str, dict] = {
     "rough_bowl_protocol": dict(
         env=dict(task="rough_terrain", terrain_shape="rough_bowl", slope_deg=10.0, terrain_amplitude=0.05),
         params=perturb.STANDARD_PARAMS, levels={"friction": ROUGH_FRICTION},
+    ),
+    # --- where exactly the slope wall sits (16 s episodes, see FINE_SLOPES) ---
+    "bowl_slope_fine": dict(
+        env=dict(task="rough_terrain", terrain_shape="bowl", slope_deg=0.0),
+        params=("slope_deg",), levels={"slope_deg": FINE_SLOPES}, spec=FINE_SLOPE_SPEC,
+    ),
+    "rough_bowl_slope_fine": dict(
+        env=dict(task="rough_terrain", terrain_shape="rough_bowl", slope_deg=0.0, terrain_amplitude=0.05),
+        params=("slope_deg",), levels={"slope_deg": FINE_SLOPES}, spec=FINE_SLOPE_SPEC,
+    ),
+    # --- several perturbations at once, on the two reference terrains ---
+    "combined_relief": dict(
+        env=dict(task="rough_terrain", terrain_shape="playground", terrain_amplitude=0.05),
+        grid=COMBINED_GRID,
+    ),
+    "combined_bowl": dict(
+        env=dict(task="rough_terrain", terrain_shape="rough_bowl", slope_deg=10.0, terrain_amplitude=0.05),
+        grid=COMBINED_GRID,
     ),
 }
 
@@ -113,11 +163,35 @@ def study_robot(runs: list[Path]) -> str:
     return str(ppo.load_env_config(runs[0]).get("robot", "go1"))
 
 
+def grid_for(suite: str, robot: str, env: Any) -> dict[str, list[float]]:
+    """A combined suite's factorial grid, adjusted for the robot.
+
+    The humanoid states payload and push as fractions of its own mass and weight,
+    so those are resolved against the model here; it also pushes along a named
+    axis rather than a random direction, and a grid takes only one push axis
+    (two would push along both at once), so the sagittal one is used.
+    """
+    grid = {k: list(v) for k, v in SUITES[suite]["grid"].items()}
+    adjust = ROBOT_ADJUST.get(robot, {})
+    if adjust.get("split_push") and "push_N" in grid:
+        grid["push_N_sagittal"] = grid.pop("push_N")
+    fractions = adjust.get("level_fractions", {})
+    for param in list(grid):
+        if param in fractions:
+            spec = perturb.EvalSpec(params=(param,), level_fractions={param: fractions[param]})
+            resolved = spec.levels_for(param, env)
+            # Keep as many levels as the quadruped grid has, spread over the robot's range.
+            n = len(grid[param])
+            idx = [round(i * (len(resolved) - 1) / (n - 1)) for i in range(n)] if n > 1 else [0]
+            grid[param] = [resolved[i] for i in idx]
+    return grid
+
+
 def spec_for(suite: str, robot: str, n_episodes: int) -> perturb.EvalSpec:
     """The suite's protocol spec, adjusted for the robot (see ROBOT_ADJUST)."""
     cfg = SUITES[suite]
-    params = list(cfg["params"])
-    levels = dict(cfg["levels"])
+    params = list(cfg.get("params", ()))
+    levels = dict(cfg.get("levels", {}))
     adjust = ROBOT_ADJUST.get(robot, {})
 
     if adjust.get("split_push") and "push_N" in params:
@@ -132,7 +206,7 @@ def spec_for(suite: str, robot: str, n_episodes: int) -> perturb.EvalSpec:
 
     return perturb.EvalSpec(
         n_episodes=n_episodes, params=tuple(params), levels=levels,
-        level_fractions=fractions, **adjust.get("spec", {}),
+        level_fractions=fractions, **{**adjust.get("spec", {}), **cfg.get("spec", {})},
     )
 
 
@@ -174,7 +248,9 @@ def run_suite(study_root: Path, suite: str, args: argparse.Namespace) -> None:
     done = set(existing["run"]) if len(existing) else set()
     robot = study_robot(runs)
     spec = spec_for(suite, robot, args.n_episodes)
-    print(f"  robot {robot}  params {spec.params}")
+    is_grid = "grid" in cfg
+    print(f"  robot {robot}  " + (f"grid over {list(cfg['grid'])}" if is_grid else f"params {spec.params}")
+          + (f"  episodes {spec.duration_s:g} s" if spec.duration_s != 8.0 else ""))
 
     for run_dir in runs:
         run_id = str(run_dir.relative_to(study_root))
@@ -185,22 +261,33 @@ def run_suite(study_root: Path, suite: str, args: argparse.Namespace) -> None:
         print(f"\n  === {study_root.name} / {run_id}  [{suite}]", flush=True)
         env = erfi.load(perturb.eval_env_config(ppo.load_env_config(run_dir, **cfg["env"]), impl=args.impl))
         policy = ppo.load_policy(run_dir, env, checkpoint=args.checkpoint)
-        df = perturb.evaluate_policy(
-            env, policy, spec, seed=args.seed,
-            meta={"run": run_id, "condition": summary["condition"], "seed": summary["seed"],
-                  "study": study_root.name, "suite": suite,
-                  "trained_task": summary.get("task", "flat_terrain"),
-                  "terrain_shape": cfg["env"].get("terrain_shape", "playground"),
-                  "base_slope_deg": cfg["env"].get("slope_deg", 0.0),
-                  "base_amplitude": cfg["env"].get("terrain_amplitude", 0.05)},
-        )
+        meta = {"run": run_id, "condition": summary["condition"], "seed": summary["seed"],
+                "study": study_root.name, "suite": suite,
+                "trained_task": summary.get("task", "flat_terrain"),
+                "terrain_shape": cfg["env"].get("terrain_shape", "playground"),
+                "base_slope_deg": cfg["env"].get("slope_deg", 0.0),
+                "base_amplitude": cfg["env"].get("terrain_amplitude", 0.05)}
+        if is_grid:
+            df = perturb.evaluate_policy_grid(
+                env, policy, grid_for(suite, robot, env), spec, seed=args.seed, meta=meta)
+        else:
+            df = perturb.evaluate_policy(env, policy, spec, seed=args.seed, meta=meta)
         frames.append(df)
         pd.concat(frames, ignore_index=True).to_csv(results_path, index=False)
 
     results = pd.concat(frames, ignore_index=True)
     results.to_csv(results_path, index=False)
-    perturb.summary_table(results).to_csv(study_root / f"summary_success_rate_{suite}.csv")
     print(f"\n  results -> {results_path}")
+    if is_grid:
+        # A factorial grid has no curve to draw; summarise by how many parameters
+        # are off nominal, which is the axis the combined suites exist to show.
+        for metric in ("success_rate", "fall_rate"):
+            (results.groupby(["condition", "n_perturbed"])[metric].mean().unstack()
+             .to_csv(study_root / f"summary_{metric}_{suite}.csv"))
+        results.groupby(["condition", "combo"]).success_rate.mean().unstack().to_csv(
+            study_root / f"summary_by_combo_{suite}.csv")
+        return
+    perturb.summary_table(results).to_csv(study_root / f"summary_success_rate_{suite}.csv")
     if not args.no_plot:
         import matplotlib
 

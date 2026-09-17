@@ -400,3 +400,86 @@ def test_curriculum_v3_config():
     spec = ppo.TrainSpec(condition="rao", seed=0, terrain_amplitude=0.015, num_timesteps=1, **c["train"])
     cfg = ppo.env_config(spec)
     assert cfg.history_target_error is True and cfg.task == "rough_terrain" and cfg.terrain_shape == "playground"
+
+
+def test_grid_points_is_full_factorial_in_a_stable_order():
+    pts = perturb.grid_points({"a": [1.0, 2.0], "b": [3.0, 4.0, 5.0]})
+    assert len(pts) == 6
+    assert pts[0] == {"a": 1.0, "b": 3.0} and pts[-1] == {"a": 2.0, "b": 5.0}
+    assert len({perturb.combo_label(p) for p in pts}) == 6
+    assert perturb.combo_label({"payload_kg": 3.0, "friction": 0.5}) == "payload_kg=3|friction=0.5"
+
+
+def test_combined_model_applies_every_parameter_at_once():
+    import numpy as np
+
+    env = erfi.load(perturb.eval_env_config(erfi.condition_config("none"), impl="jax"))
+    torso, floor = env._torso_body_id, env._floor_geom_id
+    m0 = env.mjx_model
+    combo = {"payload_kg": 6.0, "friction": 0.3, "push_N": 40.0, "gravity": -15.0, "kp_scale": 0.75}
+    m = perturb.combined_model(env, combo)
+    # every model-side parameter is in effect simultaneously
+    assert float(m.body_mass[torso]) == pytest.approx(float(m0.body_mass[torso]) + 6.0)
+    assert float(m.geom_friction[floor, 0]) == pytest.approx(0.3)
+    assert float(m.opt.gravity[2]) == pytest.approx(-15.0)
+    assert np.allclose(np.asarray(m.actuator_gainprm[:, 0]), np.asarray(m0.actuator_gainprm[:, 0]) * 0.75)
+    # the push is not a model field; it is read back for the rollout
+    assert perturb.push_of(combo) == (40.0, 0)
+    assert perturb.push_of({"payload_kg": 1.0}) == (0.0, 0)
+    assert perturb.push_of({"push_N_lateral": 5.0}) == (5.0, 2)
+    # composing is order-independent and matches applying each one alone
+    m_rev = perturb.combined_model(env, dict(reversed(list(combo.items()))))
+    assert float(m_rev.body_mass[torso]) == pytest.approx(float(m.body_mass[torso]))
+    assert float(m_rev.geom_friction[floor, 0]) == pytest.approx(0.3)
+    # a single-entry combo equals the one-at-a-time model
+    assert float(perturb.combined_model(env, {"payload_kg": 6.0}).body_mass[torso]) == pytest.approx(
+        float(perturb.perturbed_model(env, "payload_kg", 6.0).body_mass[torso]))
+
+
+def test_evaluate_policy_grid_rows_and_nominal_flag():
+    env = erfi.load(perturb.eval_env_config(erfi.condition_config("none"), impl="jax"))
+    grid = {"payload_kg": [0.0, 6.0], "friction": [0.6, 0.3], "push_N": [0.0, 40.0]}
+    spec = perturb.EvalSpec(n_episodes=2, duration_s=0.4)
+    df = perturb.evaluate_policy_grid(env, lambda o, k: (ZERO, None), grid, spec, verbose=False,
+                                      meta={"condition": "none", "seed": 0})
+    assert len(df) == 8
+    assert (df["param"] == "combined").all()
+    assert list(df["combo_id"]) == list(range(8))
+    assert set(df.columns) >= {"lvl_payload_kg", "lvl_friction", "lvl_push_N", "combo", "n_perturbed"}
+    # friction 0.6 is flat ground's training value, so the all-nominal corner is the first row
+    assert df.loc[0, "nominal"] == 1.0 and df.loc[0, "n_perturbed"] == 0
+    assert (df.loc[1:, "nominal"] == 0.0).all()
+    assert df["n_perturbed"].max() == 3
+    # a zero policy never reaches 2.5 m
+    assert (df["success_rate"] == 0).all()
+
+
+def test_new_terrain_suites_are_wired():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("eval_terrain", Path("scripts/eval_terrain.py"))
+    et = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(et)
+
+    # the fine slope sweeps run longer episodes than the 8 s protocol
+    for name in ("bowl_slope_fine", "rough_bowl_slope_fine"):
+        assert et.SUITES[name]["levels"]["slope_deg"][0] == 10.0
+        assert et.SUITES[name]["levels"]["slope_deg"][-1] == 26.0
+        assert et.spec_for(name, "go1", 50).duration_s == 16.0
+    assert et.spec_for("bowl_slope", "go1", 50).duration_s == 8.0
+
+    # the combined suites carry a 27-point grid and no one-at-a-time params
+    for name in ("combined_relief", "combined_bowl"):
+        cfg = et.SUITES[name]
+        assert "params" not in cfg and len(perturb.grid_points(cfg["grid"])) == 27
+        assert et.spec_for(name, "go1", 50).params == ()
+    assert et.SUITES["combined_bowl"]["env"]["slope_deg"] == 10.0
+    assert et.SUITES["combined_relief"]["env"]["terrain_shape"] == "playground"
+
+    # the quadruped grid passes through untouched
+    env = erfi.load(perturb.eval_env_config(erfi.condition_config("none"), impl="jax"))
+    assert et.grid_for("combined_bowl", "go1", env) == et.COMBINED_GRID
+    # the humanoid's grid is rescaled to its own mass and uses one named push axis
+    bh_grid = et.grid_for("combined_bowl", "bh", env)
+    assert "push_N_sagittal" in bh_grid and "push_N" not in bh_grid
+    assert len(bh_grid["payload_kg"]) == 3 and bh_grid["payload_kg"][0] == 0.0
