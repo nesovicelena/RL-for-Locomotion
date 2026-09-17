@@ -642,6 +642,20 @@ grid stops before the humanoid's failure point.
 
 ### 10.4 Pod commands
 
+The whole sequence, unattended and restartable, is `runpod/run_bh_curriculum.sh`:
+terrain suites on the two finished studies, then the curriculum smoke, the
+curriculum itself, its protocol evaluation and its terrain suites.
+
+```bash
+tmux new -s bh2
+SMOKE=1 bash runpod/run_bh_curriculum.sh    # pipeline check, a few minutes
+bash runpod/run_bh_curriculum.sh            # the whole sequence, 9-11 h
+SUITES=0 bash runpod/run_bh_curriculum.sh   # skip the suites on the finished studies
+CURRICULUM=0 bash runpod/run_bh_curriculum.sh   # suites only, no training
+```
+
+The individual commands, if you would rather drive it by hand:
+
 ```bash
 export RL_EXPERIMENTS_DIR=/workspace/experiments/redo
 
