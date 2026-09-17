@@ -1,0 +1,46 @@
+# v3 recipe on Unitree A1, ROUGH terrain: v1 plus the paper's joint-position
+# history (q* - q). Identical to erfi_study_a1_v3.yaml except for `task`, `out`
+# and the friction levels.
+#
+#   python scripts/train.py --config configs/experiment/erfi_study_a1_v3_rough.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_a1_v3_rough.yaml --plot
+#
+# The A1 rough scene reuses Playground's 20 x 20 m heightfield (5 cm peak-to-peak
+# relief, floor friction 1.0) with A1's own spawn height of 0.34 m. The protocol
+# reads the trained friction from the model, so the sweep below is centred on 1.0.
+#
+# On Go1 this recipe was the most reliable of the five studies (18 of 18 runs
+# walked, against 17 of 18 for v1 rough and 11 of 18 for v1 flat).
+
+name: erfi_study_a1_v3_rough
+out: erfi_study_a1_v3_rough_l2.5    # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  robot: a1
+  task: rough_terrain
+  num_timesteps: 200_000_000
+  num_evals: 10
+  history_len: 7
+  policy_layers: [512, 512]
+  value_layers: [512, 256, 128]
+  symmetric_critic: false
+  rfi_lim: 2.5
+  rao_lim: 2.5
+  impl: warp
+  env_overrides:
+    history_target_error: true
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N, friction, gravity, kp_scale]
+  levels:
+    friction: [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]

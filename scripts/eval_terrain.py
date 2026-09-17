@@ -27,7 +27,10 @@ being pushed is not. They are also the sharpest discriminator between training
 conditions, because the one-at-a-time protocol saturates near 1.0 for most of
 its levels.
 
-The levels above are the quadruped ones. The robot is read from each study's own
+The levels above are the quadruped ones, and they serve both quadrupeds: A1 is
+12.45 kg against Go1's 12.74 kg, with the same floor friction on both scenes and
+the same 192-dim state, so payload, push and friction land in the same place on
+either robot. The robot is read from each study's own
 runs and the suite is adjusted for it (`ROBOT_ADJUST`): the Berkeley Humanoid
 gets gentler slopes, the two named push axes instead of one random direction,
 payload and push as fractions of its own mass, kneeling counted as a fall, and
@@ -61,6 +64,9 @@ DEFAULT_STUDIES = [
     "erfi_study_l2.5", "erfi_study_rough_l2.5",          # Go1 v1 flat / rough
     "erfi_study_v3_l2.5", "erfi_study_v3_rough_l2.5",    # Go1 v3 flat / rough
     "erfi_study_curr_v3_l2.5",                           # Go1 terrain curriculum, v3 observation
+    "erfi_study_a1_l2.5", "erfi_study_a1_rough_l2.5",    # A1 v1 flat / rough
+    "erfi_study_a1_v3_l2.5", "erfi_study_a1_v3_rough_l2.5",  # A1 v3 flat / rough
+    "erfi_study_curr_a1_v3_l2.5",                        # A1 terrain curriculum, v3 observation
     "erfi_study_bh", "erfi_study_bh_rough",              # Berkeley Humanoid flat / rough
     "erfi_study_curr_bh",                                # Berkeley Humanoid terrain curriculum
 ]

@@ -137,3 +137,84 @@ def test_a1_protocol_runs():
                                  meta={"condition": "none", "seed": 0})
     assert len(df) == 4 and set(df["task"]) == {"flat_terrain"}
     assert float(perturb.perturbed_model(env, "payload_kg", 3.0).body_mass[env._torso_body_id]) == pytest.approx(4.713 + 3.0)
+
+
+@pytest.mark.parametrize("shape", ["bowl", "rough_bowl"])
+def test_a1_builds_and_steps_on_bowl_terrain(shape):
+    cfg = erfi.condition_config("erfi_50", robot="a1", task="rough_terrain")
+    cfg.terrain_shape, cfg.slope_deg = shape, 10.0
+    env = erfi.load(perturb.eval_env_config(cfg, impl="jax"))
+    assert float(env._config.hfield_elevation_cap) == 8.0   # needed to trace slope levels
+    assert env.spawn_height == pytest.approx(0.34)          # A1's rough spawn, not Go1's
+    state = jax.jit(env.reset)(jax.random.PRNGKey(0))
+    state = jax.jit(env.step)(state, ZERO)
+    assert bool(jp.all(jp.isfinite(state.obs["state"])))
+    # the whole fine sweep stays inside the elevation cap and rises with slope
+    prev = None
+    for slope in (10.0, 18.0, 26.0):
+        peak = float(np.asarray(perturb.perturbed_model(env, "slope_deg", slope).hfield_data).max())
+        assert peak * 8.0 <= 8.0 + 1e-6
+        if prev is not None:
+            assert peak > prev
+        prev = peak
+
+
+def test_a1_combined_grid_matches_the_go1_levels():
+    """A1 is within 2% of Go1's mass with the same floor frictions, so the suites
+    need no per-robot adjustment; this pins that, since a drift either way would
+    silently make the two robots' numbers incomparable."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("eval_terrain", Path("scripts/eval_terrain.py"))
+    et = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(et)
+
+    a1 = _a1(task="rough_terrain")
+    go1 = _go1(task="rough_terrain")
+    assert perturb.robot_mass(a1) == pytest.approx(perturb.robot_mass(go1), rel=0.05)
+    assert a1.floor_friction == pytest.approx(go1.floor_friction)
+    assert _a1(task="flat_terrain").floor_friction == pytest.approx(_go1(task="flat_terrain").floor_friction)
+    assert a1.observation_size["state"] == go1.observation_size["state"]
+    assert "a1" not in et.ROBOT_ADJUST
+    for suite in ("combined_relief", "combined_bowl"):
+        assert et.grid_for(suite, "a1", a1) == et.grid_for(suite, "go1", go1) == et.COMBINED_GRID
+    for suite in et.SUITES:
+        assert et.spec_for(suite, "a1", 50) == et.spec_for(suite, "go1", 50)
+
+
+def test_a1_study_configs_cover_v1_v3_and_the_curriculum():
+    import yaml
+    from pathlib import Path
+
+    def load(name):
+        return yaml.safe_load(Path(f"configs/experiment/{name}.yaml").read_text())
+
+    plain = {
+        "erfi_study_a1": ("flat_terrain", False),
+        "erfi_study_a1_rough": ("rough_terrain", False),
+        "erfi_study_a1_v3": ("flat_terrain", True),
+        "erfi_study_a1_v3_rough": ("rough_terrain", True),
+    }
+    for name, (task, v3) in plain.items():
+        c = load(name)
+        assert c["out"] == f"{name}_l2.5"
+        assert c["conditions"] == ["none", "dr", "rfi", "rao", "erfi_c", "erfi_50"] and c["seeds"] == [0, 1, 2]
+        assert c["train"]["robot"] == "a1" and c["train"]["task"] == task
+        assert c["train"]["rfi_lim"] == 2.5 and c["train"]["rao_lim"] == 2.5
+        # v3 is exactly v1 plus the q* - q history, so that the pair isolates it
+        assert bool(c["train"].get("env_overrides", {}).get("history_target_error")) is v3
+        # the rough studies centre the friction sweep on the rough scene's 1.0
+        assert ("friction" in c["eval"].get("levels", {})) is (task == "rough_terrain")
+        spec = ppo.TrainSpec(condition="rao", seed=0, **c["train"])
+        assert erfi.load(ppo.env_config(spec)).robot == "a1"
+
+    curr = load("erfi_study_curr_a1_v3")
+    assert curr["out"] == "erfi_study_curr_a1_v3_l2.5"
+    assert curr["train"]["robot"] == "a1" and curr["train"]["task"] == "rough_terrain"
+    assert curr["train"]["env_overrides"]["history_target_error"] is True
+    assert [s["terrain_amplitude"] for s in curr["stages"]] == [0.0, 0.015, 0.03, 0.05]
+    assert sum(s["num_timesteps"] for s in curr["stages"]) == 300_000_000
+    # the Go1 curriculum it mirrors, stage for stage
+    go1_curr = load("erfi_study_curr_v3")
+    assert curr["stages"] == go1_curr["stages"] and curr["eval"] == go1_curr["eval"]

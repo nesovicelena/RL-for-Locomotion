@@ -1,0 +1,59 @@
+# Terrain-curriculum ERFI study on Unitree A1 with the v3 observation (q* - q
+# history): every (condition, seed) is trained in four stages of increasing
+# heightfield relief, each stage initialised from the previous one. The A1
+# counterpart of erfi_study_curr_v3.yaml; same stages, budget and protocol.
+#
+#   python scripts/train_curriculum.py --config configs/experiment/erfi_study_curr_a1_v3.yaml
+#   python scripts/eval.py            --config configs/experiment/erfi_study_curr_a1_v3.yaml --plot
+#
+# Stage 0 runs on the rough scene with zero relief (a flat heightfield, friction
+# 1.0), not on the flat_terrain scene, so friction and spawn height are constant
+# across stages and the only thing that changes is the relief. Evaluation uses
+# the final stage's terrain (0.05 m), so results are directly comparable to
+# erfi_study_a1_rough_l2.5 and erfi_study_a1_v3_rough_l2.5.
+#
+# The curriculum is a *relief* curriculum, so it is a rough-terrain recipe only;
+# there is no flat-ground counterpart. On Go1 it trained 18 of 18 runs to walk
+# and helped most on a loaded slope, but gave no slope-climbing ability at all
+# (the wall between 20 and 30 deg was identical to the non-curriculum policies),
+# because it never varies slope.
+
+name: erfi_study_curr_a1_v3
+out: erfi_study_curr_a1_v3_l2.5     # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  robot: a1
+  task: rough_terrain
+  num_evals: 5               # per stage -> 20 curve points over the whole run
+  history_len: 7
+  policy_layers: [512, 512]
+  value_layers: [512, 256, 128]
+  symmetric_critic: false
+  rfi_lim: 2.5
+  rao_lim: 2.5
+  impl: warp
+  env_overrides:
+    history_target_error: true
+
+# Heightfield peak-to-peak relief in metres and steps per stage; 4 x 75 M = 300 M,
+# the budget of the other studies.
+stages:
+  - {terrain_amplitude: 0.0,   num_timesteps: 75_000_000}
+  - {terrain_amplitude: 0.015, num_timesteps: 75_000_000}
+  - {terrain_amplitude: 0.03,  num_timesteps: 75_000_000}
+  - {terrain_amplitude: 0.05,  num_timesteps: 75_000_000}
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N, friction, gravity, kp_scale]
+  levels:
+    friction: [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]

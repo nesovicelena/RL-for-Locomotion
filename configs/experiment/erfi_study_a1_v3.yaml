@@ -1,0 +1,46 @@
+# v3 recipe on Unitree A1, flat ground: v1 plus the paper's joint-position
+# history (q* - q, the tracking error against the PD target), nothing else.
+# See erfi_study_v3.yaml for why v3 builds on v1 rather than on the failed v2.
+#
+#   python scripts/train.py --config configs/experiment/erfi_study_a1_v3.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_a1_v3.yaml --plot
+#
+# A1 is the paper's own blind robot (Campanaro et al. 2022, Sec. VI-B). At
+# 12.45 kg it is within 2% of Go1's 12.74 kg and its scenes share Go1's floor
+# friction (0.6 flat, 1.0 rough), so every protocol level is used unchanged and
+# the A1 and Go1 studies are directly comparable.
+#
+# The 200 M steps here are the config default; the pod driver
+# (runpod/run_a1_everything.sh) overrides them to 300 M, the budget of the Go1
+# redo tree, so that the two robots are compared at equal budget.
+
+name: erfi_study_a1_v3
+out: erfi_study_a1_v3_l2.5       # relative to RL_EXPERIMENTS_DIR (or ./experiments)
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  robot: a1
+  task: flat_terrain
+  num_timesteps: 200_000_000
+  num_evals: 10
+  history_len: 7             # 7 -> paper's 192-dim state
+  policy_layers: [512, 512]
+  value_layers: [512, 256, 128]
+  symmetric_critic: false
+  rfi_lim: 2.5               # Nm on every joint, as in the Go1 studies
+  rao_lim: 2.5
+  impl: warp
+  env_overrides:
+    history_target_error: true
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N, friction, gravity, kp_scale]
