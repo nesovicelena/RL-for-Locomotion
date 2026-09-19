@@ -483,3 +483,56 @@ def test_new_terrain_suites_are_wired():
     bh_grid = et.grid_for("combined_bowl", "bh", env)
     assert "push_N_sagittal" in bh_grid and "push_N" not in bh_grid
     assert len(bh_grid["payload_kg"]) == 3 and bh_grid["payload_kg"][0] == 0.0
+
+
+# --------------------------------------------------------- per-substep RFI
+
+def _qpos_after(condition: str, per_substep: bool, n: int = 12, seed: int = 0):
+    """Final qpos after n control steps of a constant action."""
+    import numpy as np
+
+    cfg = erfi.condition_config(condition, robot="go1", impl="jax")
+    cfg.erfi.per_substep = per_substep
+    env = erfi.load(cfg)
+    state = jax.jit(env.reset)(jax.random.PRNGKey(seed))
+    step = jax.jit(env.step)
+    for _ in range(n):
+        state = step(state, 0.1 * jp.ones(12))
+    return np.asarray(state.data.qpos)
+
+
+def test_per_substep_is_off_by_default():
+    # Every run in experiments/redo was trained with the control-rate draw; the
+    # option must never change what those configs mean.
+    assert erfi.condition_config("erfi_50", robot="go1", impl="jax").erfi.per_substep is False
+
+
+@pytest.mark.parametrize("condition", ["none", "rao"])
+def test_per_substep_is_a_no_op_without_rfi(condition):
+    """Only episodes that use tau_r may change: `none` has ERFI off, `rao` has use_rfi = 0."""
+    import numpy as np
+
+    assert np.allclose(_qpos_after(condition, False), _qpos_after(condition, True), atol=1e-12)
+
+
+def test_per_substep_changes_rfi_trajectories():
+    import numpy as np
+
+    a, b = _qpos_after("rfi", False), _qpos_after("rfi", True)
+    assert not np.allclose(a, b, atol=1e-9)
+    assert np.all(np.isfinite(b))
+
+
+@pytest.mark.parametrize("robot,substeps", [("go1", 5), ("bh", 10)])
+def test_per_substep_restores_playgrounds_step(robot, substeps):
+    """The context manager patches a module attribute; it must always put it back."""
+    from mujoco_playground._src import mjx_env as mjx_env_module
+
+    original = mjx_env_module.step
+    cfg = erfi.condition_config("erfi_c", robot=robot, impl="jax")
+    cfg.erfi.per_substep = True
+    env = erfi.load(cfg)
+    assert env.n_substeps == substeps
+    state = jax.jit(env.step)(jax.jit(env.reset)(jax.random.PRNGKey(0)), jp.zeros(env.action_size))
+    assert bool(jp.all(jp.isfinite(state.data.qpos)))
+    assert mjx_env_module.step is original

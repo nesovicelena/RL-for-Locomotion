@@ -1,0 +1,139 @@
+# Berkeley Humanoid terrain curriculum, RFI at the physics rate
+#
+# Same study as erfi_study_curr_bh.yaml, with tau_r redrawn every physics substep
+# (`erfi.per_substep`, 500 Hz) instead of once per control step (50 Hz). Only the
+# three conditions that use tau_r are trained: `none` and `dr` have ERFI off and
+# `rao` has use_rfi = 0, and all three are bit-identical with the option on or
+# off (tests/test_erfi.py), so their policies in erfi_study_curr_bh stand.
+# Read this study next to that one: same recipe, seeds, budget, limits and
+# protocol; the RFI rate is the only difference.
+#
+# Why: the mixin sits above Playground's substep loop, so the control-rate draw
+# was never a choice (see the module docstring of envs/erfi.py). On Go1 a
+# 0.17 rad knee step has a 32 ms time constant, so a 20 ms draw is 0.62 of it
+# and the joint partially tracks each draw, which makes RFI behave partly like a
+# short RAO; in the finished v3 studies the rfi and rao curves differ by only
+# about twice the spread between seeds. This study measures what the rate does.
+#
+#   python scripts/train_curriculum.py --config configs/experiment/erfi_study_curr_bh_substep.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_curr_bh_substep.yaml --plot
+
+name: erfi_study_curr_bh_substep
+out: erfi_study_curr_bh_substep
+conditions:
+- rfi
+- erfi_c
+- erfi_50
+seeds:
+- 0
+- 1
+- 2
+train:
+  robot: bh
+  task: rough_terrain
+  num_evals: 5
+  history_len: 7
+  policy_layers:
+  - 512
+  - 512
+  value_layers:
+  - 512
+  - 256
+  - 128
+  symmetric_critic: false
+  rfi_lim:
+  - 3.032
+  - 2.052
+  - 2.359
+  - 3.717
+  - 2.863
+  - 0.158
+  - 3.032
+  - 2.052
+  - 2.359
+  - 3.717
+  - 2.863
+  - 0.158
+  rao_lim:
+  - 3.032
+  - 2.052
+  - 2.359
+  - 3.717
+  - 2.863
+  - 0.158
+  - 3.032
+  - 2.052
+  - 2.359
+  - 3.717
+  - 2.863
+  - 0.158
+  impl: warp
+  env_overrides:
+    erfi.critic_sees_offset: true
+    history_target_error: true
+    erfi.per_substep: true
+stages:
+- terrain_amplitude: 0.0
+  num_timesteps: 50_000_000
+- terrain_amplitude: 0.015
+  num_timesteps: 50_000_000
+- terrain_amplitude: 0.03
+  num_timesteps: 50_000_000
+- terrain_amplitude: 0.05
+  num_timesteps: 50_000_000
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command:
+  - 0.5
+  - 0.0
+  - 0.0
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params:
+  - payload_kg
+  - push_N_sagittal
+  - push_N_lateral
+  - friction
+  - gravity
+  - kp_scale
+  level_fractions:
+    payload_kg:
+    - 0.0
+    - 0.025
+    - 0.05
+    - 0.075
+    - 0.1
+    - 0.15
+    - 0.2
+    push_N_sagittal:
+    - 0.0
+    - 0.03
+    - 0.06
+    - 0.09
+    - 0.12
+    - 0.16
+    - 0.2
+    - 0.24
+    push_N_lateral:
+    - 0.0
+    - 0.03
+    - 0.06
+    - 0.09
+    - 0.12
+    - 0.16
+    - 0.2
+    - 0.24
+  levels:
+    friction:
+    - 0.3
+    - 0.5
+    - 0.7
+    - 0.85
+    - 1.0
+    - 1.15
+    - 1.3
+  low_base_fraction: 0.5
+  nominal_reset: true

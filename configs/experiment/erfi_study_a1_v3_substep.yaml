@@ -1,0 +1,67 @@
+# v3 on A1, flat ground, RFI at the physics rate
+#
+# Same study as erfi_study_a1_v3.yaml, with tau_r redrawn every physics substep
+# (`erfi.per_substep`, 250 Hz) instead of once per control step (50 Hz). Only the
+# three conditions that use tau_r are trained: `none` and `dr` have ERFI off and
+# `rao` has use_rfi = 0, and all three are bit-identical with the option on or
+# off (tests/test_erfi.py), so their policies in erfi_study_a1_v3_l2.5 stand.
+# Read this study next to that one: same recipe, seeds, budget, limits and
+# protocol; the RFI rate is the only difference.
+#
+# Why: the mixin sits above Playground's substep loop, so the control-rate draw
+# was never a choice (see the module docstring of envs/erfi.py). On Go1 a
+# 0.17 rad knee step has a 32 ms time constant, so a 20 ms draw is 0.62 of it
+# and the joint partially tracks each draw, which makes RFI behave partly like a
+# short RAO; in the finished v3 studies the rfi and rao curves differ by only
+# about twice the spread between seeds. This study measures what the rate does.
+#
+#   python scripts/train.py --config configs/experiment/erfi_study_a1_v3_substep.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_a1_v3_substep.yaml --plot
+
+name: erfi_study_a1_v3_substep
+out: erfi_study_a1_v3_substep_l2.5
+conditions:
+- rfi
+- erfi_c
+- erfi_50
+seeds:
+- 0
+- 1
+- 2
+train:
+  robot: a1
+  task: flat_terrain
+  num_timesteps: 300_000_000
+  num_evals: 15
+  history_len: 7
+  policy_layers:
+  - 512
+  - 512
+  value_layers:
+  - 512
+  - 256
+  - 128
+  symmetric_critic: false
+  rfi_lim: 2.5
+  rao_lim: 2.5
+  impl: warp
+  env_overrides:
+    history_target_error: true
+    erfi.per_substep: true
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command:
+  - 0.5
+  - 0.0
+  - 0.0
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params:
+  - payload_kg
+  - push_N
+  - friction
+  - gravity
+  - kp_scale

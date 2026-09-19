@@ -9,8 +9,21 @@ on top of the actuator output, at the joint DOFs:
     tau_j = Kp(q*_j - q_j) - Kd qdot_j  +  tau_r,j  +  tau_o,j
             \_________ position actuator _________/    \___ qfrc_applied ___/
 
-    RFI  tau_r ~ U(-r_lim, r_lim)   resampled every control step
+    RFI  tau_r ~ U(-r_lim, r_lim)   resampled every control step (50 Hz), or
+                                    every physics substep with `erfi.per_substep`
     RAO  tau_o ~ U(-o_lim, o_lim)   sampled once per episode
+
+RFI rate. The paper draws tau_r at the *impedance control* frequency, which is
+higher than the policy's. Here the mixin sits above Playground's `step`, whose
+substep loop is a closed lax.scan, so the only free injection point is
+`qfrc_applied` before the call -- which holds for the whole control interval and
+ties the RFI rate to `ctrl_dt` (50 Hz). Measured on Go1, a 0.17 rad step at the
+knee has a 32 ms time constant, so a 20 ms draw is 0.62 of it: the joint
+partially tracks each draw instead of averaging it, which makes RFI behave
+partly like a short RAO. `erfi.per_substep` replaces that loop (see
+`_substep_rfi`) and redraws tau_r every physics substep -- 250 Hz on the
+quadrupeds, 500 Hz on the humanoid. Off by default, so every run in
+experiments/redo stays reproducible.
 
 Modes:
     "rfi"      tau_r only
@@ -48,6 +61,7 @@ humanoid, where stance torques differ by an order of magnitude between joints).
 """
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -219,6 +233,11 @@ def default_config(robot: str = "go1") -> config_dict.ConfigDict:
         # advantage of "start walking" noisy and stalls RAO/ERFI runs in the
         # standing optimum. v1 studies were trained with False.
         critic_sees_offset=False,
+        # Redraw tau_r every physics substep instead of every control step, by
+        # replacing Playground's substep loop (`_substep_rfi`). True is the
+        # paper's rate (250 Hz on the quadrupeds, 500 Hz on the humanoid);
+        # False is what every run in experiments/redo was trained with.
+        per_substep=False,
         # One number for every joint, or a list with one entry per joint
         # (`set_torque_limits`). The humanoid's provisional vector is 10 % of
         # each joint's actuator-force clamp; the study replaces it with a
@@ -439,6 +458,43 @@ class _ERFIMixin:
 
         return tau_o * use_rao, jp.asarray(use_rfi, dtype=jp.float32)
 
+    @contextlib.contextmanager
+    def _substep_rfi(self, key: jax.Array, offset: jax.Array, use_rfi: jax.Array):
+        """Swap Playground's substep loop for one that redraws tau_r every substep.
+
+        `Joystick.step` calls `mjx_env.step(model, data, ctrl, n_substeps)`, a
+        closed lax.scan that only refreshes `ctrl`; `qfrc_applied` is carried in
+        `data` and therefore held for the whole control interval. Replacing the
+        module attribute for the duration of the call is the same trick
+        `eval/perturb.make_batched_rollout` uses for `env._mjx_model`: the parent
+        looks the function up on the module at call time, and both the quadruped
+        and the humanoid task go through this one function.
+
+        The replacement keeps `ctrl` handling identical and adds one draw per
+        substep, so `per_substep=False` and the original are bit-identical.
+        """
+        original = mjx_env.step
+        nu, nv, start = self.mjx_model.nu, self.mjx_model.nv, self._joint_dof_start
+        lim = self._rfi_lim
+
+        def step_with_substep_rfi(model, data, action, n_substeps=1):
+            def single_step(carry, _):
+                data, k = carry
+                k, k_tau = jax.random.split(k)
+                tau_r = jax.random.uniform(k_tau, (nu,), minval=-lim, maxval=lim)
+                qfrc = jp.zeros(nv).at[start:].set(offset + tau_r * use_rfi)
+                data = data.replace(ctrl=action, qfrc_applied=qfrc)
+                return (mjx.step(model, data), k), None
+
+            (data, _), _ = jax.lax.scan(single_step, (data, key), (), n_substeps)
+            return data
+
+        mjx_env.step = step_with_substep_rfi
+        try:
+            yield
+        finally:
+            mjx_env.step = original
+
     # ----------------------------------------------------------- observation
 
     def _obs_extra_args(self, data: Any) -> tuple:
@@ -514,13 +570,21 @@ class _ERFIMixin:
 
     def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
         cfg = self._config.erfi
+        per_substep = cfg.enable and cfg.get("per_substep", False)
+        key = None
         if cfg.enable:
             rng, key = jax.random.split(state.info["rng"])
             state.info["rng"] = rng
-            tau_r = jax.random.uniform(
-                key, (self.mjx_model.nu,), minval=-self._rfi_lim, maxval=self._rfi_lim
-            )
-            tau = state.info["erfi_offset"] + tau_r * state.info["erfi_use_rfi"]
+            # With per_substep the draw happens inside the substep loop, so only
+            # the episode offset goes in here; it is what the first substep would
+            # otherwise start from, and RAO-only episodes never enter the loop's
+            # RFI term anyway (use_rfi is 0).
+            tau = state.info["erfi_offset"]
+            if not per_substep:
+                tau_r = jax.random.uniform(
+                    key, (self.mjx_model.nu,), minval=-self._rfi_lim, maxval=self._rfi_lim
+                )
+                tau = tau + tau_r * state.info["erfi_use_rfi"]
             qfrc = jp.zeros(self.mjx_model.nv).at[self._joint_dof_start :].set(tau)
             state = state.replace(data=state.data.replace(qfrc_applied=qfrc))
 
@@ -528,9 +592,14 @@ class _ERFIMixin:
         # expose the action whose target the PD controller holds right now.
         state.info["applied_act"] = action
 
-        # qfrc_applied persists across the substeps inside mjx_env.step, so the
-        # parent's step applies tau for the whole control interval.
-        state = super().step(state, action)
+        if per_substep:
+            # Redraw tau_r at the physics rate; see `_substep_rfi`.
+            with self._substep_rfi(key, state.info["erfi_offset"], state.info["erfi_use_rfi"]):
+                state = super().step(state, action)
+        else:
+            # qfrc_applied persists across the substeps inside mjx_env.step, so the
+            # parent's step applies tau for the whole control interval.
+            state = super().step(state, action)
         done = state.done.astype(bool)
 
         if cfg.enable:

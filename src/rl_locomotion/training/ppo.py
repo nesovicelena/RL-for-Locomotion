@@ -268,6 +268,8 @@ def load_env_config(run_dir: Path | str, **overrides: Any) -> config_dict.Config
         cfg.robot = "go1"
     if "critic_sees_offset" not in cfg.erfi:  # v1 runs predate the v2 recipe
         cfg.erfi.critic_sees_offset = False
+    if "per_substep" not in cfg.erfi:  # runs predating the substep-rate RFI option
+        cfg.erfi.per_substep = False
     if "terrain_amplitude" not in cfg:  # runs predating the curriculum used Playground's 0.05
         cfg.terrain_amplitude = 0.05
     for k, v in overrides.items():

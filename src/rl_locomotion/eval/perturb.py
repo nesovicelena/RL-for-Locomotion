@@ -165,6 +165,8 @@ def eval_env_config(train_env_cfg: Any, impl: str = "jax") -> Any:
         cfg.robot = "go1"
     if "critic_sees_offset" not in cfg.erfi:  # v1 runs predate the v2 recipe
         cfg.erfi.critic_sees_offset = False
+    if "per_substep" not in cfg.erfi:  # runs predating the substep-rate RFI option
+        cfg.erfi.per_substep = False
     if "terrain_amplitude" not in cfg:
         cfg.terrain_amplitude = 0.05
     if "terrain_shape" not in cfg:
@@ -558,6 +560,11 @@ def plot_success_curves(
     nrows = -(-len(params) // ncols)
     fig, axes = plt.subplots(nrows, ncols, figsize=(4.2 * ncols, 3.3 * nrows), squeeze=False)
     conditions = [c for c in CONDITION_COLORS if c in set(results["condition"])]
+    # Rates live on [0, 1]. Anything else (progress in metres, tracking RMSE)
+    # gets one data-driven scale shared by every panel, so panels stay
+    # comparable and nothing is clipped.
+    is_rate = metric.endswith("_rate")
+    ymax = 1.0 if is_rate else float(np.nanmax(results.loc[results["param"].isin(params), metric])) * 1.05
 
     for ax, param in zip(axes.flat, params):
         sub = results[results["param"] == param]
@@ -573,8 +580,12 @@ def plot_success_curves(
             ax.fill_between(mean.index, lo.values, hi.values, color=color, alpha=0.12, lw=0)
         nominal = float(sub["nominal"].iloc[0]) if "nominal" in sub else PROTOCOL[base_param(param)][1]
         ax.axvline(nominal, color="#888888", lw=1, ls="--")
-        ax.text(nominal, 1.03, "training", color="#666666", fontsize=8, ha="center", va="bottom")
-        ax.set_ylim(-0.02, 1.02)
+        ax.text(nominal, 1.01, "training", color="#666666", fontsize=8, ha="center", va="bottom",
+                transform=ax.get_xaxis_transform())
+        if metric == "progress_m":
+            # the protocol's success distance
+            ax.axhline(2.5, color="#888888", lw=0.8, ls=":")
+        ax.set_ylim(-0.02 * ymax, 1.02 * ymax)
         ax.set_xlabel(LABELS[param])
         ax.set_ylabel(metric.replace("_", " "))
         ax.grid(alpha=0.25, lw=0.6)
