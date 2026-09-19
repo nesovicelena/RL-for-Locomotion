@@ -4,6 +4,8 @@
     python scripts/eval.py --runs /workspace/experiments/erfi_study --params payload_kg push_N
     # cross-terrain: flat-trained policies, full protocol on the rough heightfield
     python scripts/eval.py --config configs/experiment/erfi_study.yaml --task rough_terrain --plot
+    # cross-robot: Go1-trained policies, zero-shot on the A1 model (see --robot below)
+    python scripts/eval.py --config configs/experiment/erfi_study_v3.yaml --robot a1 --plot
 
 Writes <runs>/results.csv (one row per run x parameter x level), a per-condition
 summary table, and with --plot the Fig.-5-style success curves as PNG.
@@ -11,6 +13,16 @@ With --task (or --terrain-amplitude) the scene differs from the training one, so
 the outputs get a suffix, e.g. results_rough_terrain.csv, and the friction sweep is
 centred on that scene's floor friction. Already-evaluated runs are skipped unless
 --force is given.
+
+--robot evaluates every policy on another robot's model, without retraining. Go1
+and A1 share the task code, the 192-dim state, the 12 actions, the default pose
+and Kp/Kd (envs/a1/a1_joystick.py), so a checkpoint of one loads into the env of
+the other unchanged; what differs is the dynamics the policy never saw (trunk
+mass 5.20 vs 4.71 kg, leg 0.213 vs 0.200 m, foot radius, actuator limits). That
+is the shift RAO claims to absorb implicitly (paper Sec. V-B), tested by
+swapping the robot rather than a parameter. Output suffix `_on_<robot>`, e.g.
+results_on_a1.csv; rows carry `trained_robot` next to `robot`. Refused when the
+two robots do not share an ERFI layout (the humanoid).
 """
 from __future__ import annotations
 
@@ -53,6 +65,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--impl", choices=["warp", "jax"])
     p.add_argument("--checkpoint", default="params_final")
     p.add_argument("--task", choices=list(erfi.TASKS), help="evaluate on this terrain instead of the training one")
+    p.add_argument("--robot", choices=list(erfi.ROBOTS),
+                   help="evaluate on this robot's model instead of the training one (zero-shot transfer)")
     p.add_argument("--terrain-amplitude", type=float, help="heightfield relief in m (rough terrain), default 0.05")
     p.add_argument("--seed", type=int, default=0, help="seed for the evaluation episodes")
     p.add_argument("--plot", action="store_true")
@@ -81,6 +95,9 @@ def main() -> None:
             ev.setdefault("levels", {})["friction"] = [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]
         if args.task == "flat_terrain":
             ev.setdefault("levels", {}).pop("friction", None)  # back to PROTOCOL's 0.2..0.8
+    if args.robot:
+        overrides["robot"] = args.robot
+        suffix += f"_on_{args.robot}"
     if args.terrain_amplitude is not None:
         overrides["terrain_amplitude"] = args.terrain_amplitude
         suffix += f"_a{args.terrain_amplitude:.3f}"
@@ -106,13 +123,19 @@ def main() -> None:
             print(f"skip {run_id} (evaluated)")
             continue
         summary = json.loads((run_dir / "summary.json").read_text())
-        print(f"\n=== {run_id}")
+        trained_robot = summary.get("robot", "go1")
+        if args.robot and erfi.LAYOUTS[trained_robot] is not erfi.LAYOUTS[args.robot]:
+            # Same layout object = same state slices, same nu; the checkpoint fits
+            # the other env without a reshape. Go1 and A1 share _GO1_LAYOUT.
+            sys.exit(f"{run_id}: trained on {trained_robot}, whose ERFI layout differs from "
+                     f"{args.robot}'s; the checkpoint cannot be evaluated zero-shot there")
+        print(f"\n=== {run_id}" + (f"  (trained on {trained_robot}, evaluated on {args.robot})" if args.robot else ""))
         env = erfi.load(perturb.eval_env_config(ppo.load_env_config(run_dir, **overrides), impl=impl))
         policy = ppo.load_policy(run_dir, env, checkpoint=args.checkpoint)
         df = perturb.evaluate_policy(
             env, policy, spec, seed=args.seed,
             meta={"run": run_id, "condition": summary["condition"], "seed": summary["seed"],
-                  "trained_task": summary.get("task", "flat_terrain")},
+                  "trained_task": summary.get("task", "flat_terrain"), "trained_robot": trained_robot},
         )
         frames.append(df)
         pd.concat(frames, ignore_index=True).to_csv(results_path, index=False)
