@@ -71,6 +71,7 @@ DEFAULT_STUDIES = [
     "erfi_study_curr_bh",                                # Berkeley Humanoid terrain curriculum
     "erfi_study_spot_v3", "erfi_study_spot_v3_rough",    # Spot v3 flat / rough
     "erfi_study_curr_spot_v3",                           # Spot terrain curriculum, v3 observation
+    "erfi_study_spot_v3_lim20",                          # Spot flat, uniform 20 Nm limit (rao, erfi_c only)
 ]
 
 ROUGH_FRICTION = [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]  # centred on the rough scene's 1.0

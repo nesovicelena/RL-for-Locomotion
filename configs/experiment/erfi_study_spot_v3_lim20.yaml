@@ -1,0 +1,64 @@
+# Spot, flat ground, v3 recipe, with a UNIFORM 20 Nm torque limit instead of the
+# measured 0.5 x RMS vector of erfi_study_spot_v3.yaml. A follow-up to that
+# study, not a replacement: only the two RAO-bearing conditions are retrained,
+# and they are compared against the finished none / dr / rfi runs of
+# erfi_study_spot_v3 (same recipe, budget, protocol).
+#
+# WHY. RAO acts as a shift of the joint's target position, Delta q = tau / Kp
+# (Campanaro et al. 2022, Sec. V-B). Spot's PD gain is 300 against 35 on Go1 and
+# the humanoid, so the measured vector (7.1 Nm hips, 20 Nm knees) shifts a Spot
+# hip by 1.4 deg where Go1's 2.5 Nm shifts its hip by 4.1 deg and the paper's
+# 20 Nm at Kp 80 shifts an ANYmal C joint by 14 deg. Two independent scalings
+# give the same number for Spot: matching Go1's shift (300 x 0.071 rad = 21 Nm)
+# and scaling the paper's 20 Nm by mass (50.34 / ~50 kg). Uniform, as the paper.
+# Resulting shift here: 20 / 300 = 0.067 rad = 3.8 deg on every joint.
+#
+# SAFETY. The 50 M sweep (runpod/run_spot_limits.sh, 2026-09-20) had RAO and
+# ERFI-50 walking 3.7-3.8 m at 1.0 x the RMS vector (14-41 Nm), so 20 Nm is
+# well inside the range where training converges on this robot.
+#
+# NOTE. The paper does not justify its 20 Nm and gives no A1 value; the
+# "0.5 x stance RMS" rule of the humanoid and Spot configs is this project's
+# own. The comparison of this study with erfi_study_spot_v3 is what tests
+# whether the limit should follow Kp rather than stance torque.
+#
+#   python scripts/train.py --config configs/experiment/erfi_study_spot_v3_lim20.yaml
+#   python scripts/eval.py  --config configs/experiment/erfi_study_spot_v3_lim20.yaml --plot
+#   python scripts/eval_terrain.py --studies erfi_study_spot_v3_lim20
+#
+# On the pod: STUDIES=erfi_study_spot_v3_lim20 bash runpod/run_all_studies.sh
+# (6 runs x ~9 min + protocol, about 1.5 h on an RTX 6000 Ada).
+
+name: erfi_study_spot_v3_lim20
+out: erfi_study_spot_v3_lim20
+
+conditions: [rao, erfi_c]
+seeds: [0, 1, 2]
+
+train:
+  robot: spot
+  task: flat_terrain
+  num_timesteps: 300_000_000
+  num_evals: 15
+  history_len: 7
+  policy_layers: [512, 512]
+  value_layers: [512, 256, 128]
+  symmetric_critic: false
+  rfi_lim: 20.0    # uniform, the paper's value; Delta q = 20/300 = 3.8 deg on every joint
+  rao_lim: 20.0
+  impl: warp
+  env_overrides:
+    history_target_error: true
+
+eval:                      # identical to erfi_study_spot_v3.yaml
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N, friction, gravity, kp_scale]
+  level_fractions:
+    payload_kg: [0.0, 0.0785, 0.157, 0.2354, 0.3139, 0.3924, 0.4708]
+    push_N: [0.0, 0.04, 0.08, 0.12, 0.16, 0.2, 0.24, 0.32]
