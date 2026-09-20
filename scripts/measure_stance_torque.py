@@ -12,8 +12,8 @@ of magnitude in the torque they carry, so the limit is a vector: the paper's
 Rolls the policy through the protocol's nominal setting (ERFI off, 0.5 m/s,
 8 s, 50 episodes, no perturbation) on the JAX backend, records
 `data.actuator_force` at every control step the robot is still up, and reports
-the per-joint RMS. The limit is `fraction` x RMS, averaged over the left and
-right leg so the vector is symmetric. Writes stance_torque.json next to the run
+the per-joint RMS. The limit is `fraction` x RMS, each joint averaged with its
+left/right mirror joint (`MIRROR`, per robot) so the vector is symmetric. Writes stance_torque.json next to the run
 and, with --write, replaces the `rfi_lim:` / `rao_lim:` lines of the given
 experiment configs in place (comments and everything else untouched).
 """
@@ -83,12 +83,35 @@ def measure(env, policy, n_episodes: int = 50, duration_s: float = 8.0,
     }
 
 
-def symmetric_limit(rms: np.ndarray, fraction: float) -> list[float]:
-    """fraction x RMS, averaged between the two legs (first and second half of the vector)."""
-    half = len(rms) // 2
-    per_leg = 0.5 * (rms[:half] + rms[half:])
-    lim = np.round(fraction * per_leg, 3)
-    return np.concatenate([lim, lim]).tolist()
+# Index of each joint's left/right mirror, per robot, in the model's actuator
+# order. Averaging a joint with its mirror makes the limit left/right symmetric
+# (the model is; the measured gait need not be) while keeping front and hind
+# legs distinct, which on a quadruped carry different loads.
+#   bh    LL_* 0-5  <-> LR_* 6-11                       (two legs)
+#   spot  fl 0-2 <-> fr 3-5,  hl 6-8 <-> hr 9-11        (four legs, fl fr hl hr)
+#   go1/a1  FR 0-2 <-> FL 3-5,  RR 6-8 <-> RL 9-11      (four legs, FR FL RR RL)
+MIRROR: dict[str, list[int]] = {
+    "bh": list(range(6, 12)) + list(range(0, 6)),
+    "spot": [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8],
+    "go1": [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8],
+    "a1": [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8],
+}
+
+
+def symmetric_limit(rms: np.ndarray, fraction: float, robot: str = "bh") -> list[float]:
+    """fraction x RMS, each joint averaged with its left/right mirror (`MIRROR[robot]`).
+
+    Before the Spot study this averaged the first and second half of the vector,
+    which is left/right only for the humanoid's LL/LR order; on a quadruped
+    ordered fl fr hl hr it averaged front with hind legs of the same side instead.
+    """
+    if robot not in MIRROR:
+        raise ValueError(f"no left/right mirror map for robot {robot!r}; add it to MIRROR")
+    mirror = np.asarray(MIRROR[robot])
+    if len(rms) != len(mirror):
+        raise ValueError(f"{robot}: expected {len(mirror)} joints, got {len(rms)}")
+    lim = np.round(fraction * 0.5 * (rms + rms[mirror]), 3)
+    return lim.tolist()
 
 
 def write_limits(config_path: Path, limits: list[float], provenance: str) -> None:
@@ -118,7 +141,7 @@ def main() -> None:
     policy = ppo.load_policy(run_dir, env, checkpoint=args.checkpoint)
     result = measure(env, policy, n_episodes=args.n_episodes, duration_s=args.duration_s)
     rms = np.asarray(result["rms_per_joint"])
-    limits = symmetric_limit(rms, args.fraction)
+    limits = symmetric_limit(rms, args.fraction, env.robot)
     names = {"bh": bh.JOINT_NAMES, "spot": spot_pkg.JOINT_NAMES}.get(env.robot, [f"j{i}" for i in range(len(rms))])
 
     result.update({

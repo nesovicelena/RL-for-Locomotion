@@ -84,7 +84,11 @@ if [ "${TIMING:-1}" = "1" ]; then
     t0=$(date +%s)
     run timing_spot python scripts/train.py --config "${CFG_FLAT}" --conditions none --seeds 0 \
         --num-timesteps 20000000 --num-evals 2 --out erfi_study_spot_v3_timing
-    dt=$(( $(date +%s) - t0 ))
+    rc=$?; dt=$(( $(date +%s) - t0 ))
+    if [ ${rc} -ne 0 ]; then
+        note "FAIL stage 1: train.py exited ${rc} after ${dt} s (see ${LOGS}/timing_spot.log). Not installed? Run runpod/bootstrap.sh first."
+        exit 1
+    fi
     note "timing: 20 M in $(( dt / 60 )).$(( (dt % 60) / 6 )) min -> 300 M about $(( dt * 15 / 60 )) min per run (incl. JIT once)"
 fi
 

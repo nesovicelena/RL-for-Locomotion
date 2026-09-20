@@ -9,11 +9,21 @@
 # Recipe: v3 = history_target_error only. critic_sees_offset stays off, as on
 # Go1 and A1 (the humanoid had it on).
 #
-# TORQUE LIMIT IS PROVISIONAL until runpod/run_spot_limits.sh replaces it: on
-# Spot 2.5 Nm would shift a joint by 0.5 deg at Kp 300. The study's value is
-# 0.5 x the per-joint RMS actuator force of the best walking `none` policy
-# (scripts/measure_stance_torque.py), confirmed by a 50 M sweep at 0.25 / 0.5 /
-# 1.0 of that vector, written here with its provenance -- the humanoid procedure.
+# TORQUE LIMIT: 0.5 x the per-joint RMS actuator force of the best walking `none`
+# policy (none/seed1, 3.79 m nominal), measured 2026-09-20 by
+# runpod/run_spot_limits.sh -> scripts/measure_stance_torque.py, each joint
+# averaged with its left/right mirror (fl<->fr, hl<->hr), front and hind kept
+# distinct. Go1's 2.5 Nm would shift a Spot joint by 0.5 deg at Kp 300, hence the
+# humanoid procedure. Resulting shift Delta q = tau/Kp: 1.4 deg hip abduction,
+# 1.4 / 0.8 deg hip flexion (front / hind), 3.8 / 3.3 deg knee.
+#
+# Sweep 2026-09-20 (erfi_50 and rao, seed 0, 50 M): both walk at 0.25, 0.5 AND
+# 1.0 x this vector (3.7-3.8 m nominal) -- the first robot in the programme on
+# which RAO is not trapped in the standing optimum at any tested limit. 0.5 is
+# kept as the paper's "half a stance torque" rule, shared with the humanoid, so
+# the limit used here is CONSERVATIVE on Spot. (The sweep ran on the vector
+# before the left/right fix; the two agree in total magnitude, differing only in
+# its split across front and hind hips, up to 25 % on hip flexion.)
 #
 #   python scripts/train.py --config configs/experiment/erfi_study_spot_v3.yaml
 #   python scripts/eval.py --config configs/experiment/erfi_study_spot_v3.yaml --plot
@@ -33,8 +43,8 @@ train:
   policy_layers: [512, 512]
   value_layers: [512, 256, 128]
   symmetric_critic: false
-  rfi_lim: 10.0   # PROVISIONAL, see header; replaced by runpod/run_spot_limits.sh
-  rao_lim: 10.0   # PROVISIONAL, see header; replaced by runpod/run_spot_limits.sh
+  rfi_lim: [7.165, 7.097, 20.013, 7.165, 7.097, 20.013, 7.827, 4.237, 17.184, 7.827, 4.237, 17.184]   # measured 2026-09-20: 0.5 x RMS actuator force of seed1 (none), 50 x 8 s, 3.79 m nominal; left/right mirror-averaged (fl<->fr, hl<->hr), front and hind kept distinct
+  rao_lim: [7.165, 7.097, 20.013, 7.165, 7.097, 20.013, 7.827, 4.237, 17.184, 7.827, 4.237, 17.184]   # measured 2026-09-20: 0.5 x RMS actuator force of seed1 (none), 50 x 8 s, 3.79 m nominal; left/right mirror-averaged (fl<->fr, hl<->hr), front and hind kept distinct
   impl: warp
   env_overrides:
     history_target_error: true
