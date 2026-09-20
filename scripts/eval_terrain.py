@@ -69,6 +69,8 @@ DEFAULT_STUDIES = [
     "erfi_study_curr_a1_v3_l2.5",                        # A1 terrain curriculum, v3 observation
     "erfi_study_bh", "erfi_study_bh_rough",              # Berkeley Humanoid flat / rough
     "erfi_study_curr_bh",                                # Berkeley Humanoid terrain curriculum
+    "erfi_study_spot_v3", "erfi_study_spot_v3_rough",    # Spot v3 flat / rough
+    "erfi_study_curr_spot_v3",                           # Spot terrain curriculum, v3 observation
 ]
 
 ROUGH_FRICTION = [0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3]  # centred on the rough scene's 1.0
@@ -132,7 +134,24 @@ SUITES: dict[str, dict] = {
 
 # Per-robot adjustments to a suite, applied by `spec_for`. Robots absent from
 # this table (go1, a1) use the levels above unchanged.
+#
+# Go1's payload and push levels as fractions of Go1's own mass (12.743 kg) and
+# weight (125.0 N): 0-6 kg = 0-0.471 of the mass, 0-40 N = 0-0.320 of the
+# weight. Stated as fractions they place the same relative load on any robot;
+# on Spot (50.34 kg) they resolve to 0-23.7 kg and 0-158 N, the latter within
+# 5 % of the paper's 0-150 N on the ~50 kg ANYmal C.
+GO1_PAYLOAD_FRACTIONS = [round(kg / 12.743, 4) for kg in (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)]
+GO1_PUSH_FRACTIONS = [round(n / (12.743 * 9.81), 4) for n in (0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0)]
+
 ROBOT_ADJUST: dict[str, dict] = {
+    # Spot: a quadruped four times Go1's mass. Everything Go1-shaped stays (random
+    # push direction, the task's own termination as the fall criterion, the
+    # slope and relief grids, the reset as the task does it); only payload and
+    # push are scaled to the robot, as fractions, so 6 kg does not turn into a
+    # 12 % load. Resolved against the model at evaluation time.
+    "spot": dict(
+        level_fractions={"payload_kg": GO1_PAYLOAD_FRACTIONS, "push_N": GO1_PUSH_FRACTIONS},
+    ),
     "bh": dict(
         # Kneeling is not a termination on a feet-only-collision humanoid, and the
         # paper deploys from the same pose every time (docs/humanoid_design.md 2.3, 8.1).

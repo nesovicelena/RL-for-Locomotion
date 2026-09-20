@@ -34,6 +34,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
 from rl_locomotion.envs import bh, erfi  # noqa: E402
+from rl_locomotion.envs import spot as spot_pkg  # noqa: E402
 from rl_locomotion.eval import perturb  # noqa: E402
 from rl_locomotion.training import ppo  # noqa: E402
 
@@ -118,7 +119,7 @@ def main() -> None:
     result = measure(env, policy, n_episodes=args.n_episodes, duration_s=args.duration_s)
     rms = np.asarray(result["rms_per_joint"])
     limits = symmetric_limit(rms, args.fraction)
-    names = bh.JOINT_NAMES if env.robot == "bh" else [f"j{i}" for i in range(len(rms))]
+    names = {"bh": bh.JOINT_NAMES, "spot": spot_pkg.JOINT_NAMES}.get(env.robot, [f"j{i}" for i in range(len(rms))])
 
     result.update({
         "run_dir": str(run_dir), "checkpoint": args.checkpoint, "robot": env.robot, "task": env.task,

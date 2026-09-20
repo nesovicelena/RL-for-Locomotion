@@ -1,0 +1,55 @@
+# v3 ERFI study on Boston Dynamics Spot, flat ground
+#
+# Third quadruped of the study, after Go1 and A1: Boston Dynamics Spot, 50.34 kg,
+# four times their mass. Playground's own Spot joystick task is kept whole
+# (reward, Kp 300 / Kd 1 + kv 20, action_scale 0.3, fall at ~32 deg tilt), as the
+# Berkeley Humanoid study kept its task; the ERFI mixin builds the paper's
+# 192-dim policy input on top (envs/spot/, envs/erfi.py LAYOUTS["spot"]).
+#
+# Recipe: v3 = history_target_error only. critic_sees_offset stays off, as on
+# Go1 and A1 (the humanoid had it on).
+#
+# TORQUE LIMIT IS PROVISIONAL until runpod/run_spot_limits.sh replaces it: on
+# Spot 2.5 Nm would shift a joint by 0.5 deg at Kp 300. The study's value is
+# 0.5 x the per-joint RMS actuator force of the best walking `none` policy
+# (scripts/measure_stance_torque.py), confirmed by a 50 M sweep at 0.25 / 0.5 /
+# 1.0 of that vector, written here with its provenance -- the humanoid procedure.
+#
+#   python scripts/train.py --config configs/experiment/erfi_study_spot_v3.yaml
+#   python scripts/eval.py --config configs/experiment/erfi_study_spot_v3.yaml --plot
+
+name: erfi_study_spot_v3
+out: erfi_study_spot_v3
+
+conditions: [none, dr, rfi, rao, erfi_c, erfi_50]
+seeds: [0, 1, 2]
+
+train:
+  robot: spot
+  task: flat_terrain
+  num_timesteps: 300_000_000   # the redo tree's budget
+  num_evals: 15
+  history_len: 7             # 7 -> paper's 192-dim state
+  policy_layers: [512, 512]
+  value_layers: [512, 256, 128]
+  symmetric_critic: false
+  rfi_lim: 10.0   # PROVISIONAL, see header; replaced by runpod/run_spot_limits.sh
+  rao_lim: 10.0   # PROVISIONAL, see header; replaced by runpod/run_spot_limits.sh
+  impl: warp
+  env_overrides:
+    history_target_error: true
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  push_start_s: 1.0
+  push_duration_s: 3.0
+  params: [payload_kg, push_N, friction, gravity, kp_scale]
+  # Go1's payload (0-6 kg) and push (0-40 N) levels as fractions of Go1's mass and
+  # weight, resolved against Spot's 50.34 kg at evaluation: 0-23.7 kg, 0-158 N.
+  level_fractions:
+    payload_kg: [0.0, 0.0785, 0.157, 0.2354, 0.3139, 0.3924, 0.4708]
+    push_N: [0.0, 0.04, 0.08, 0.12, 0.16, 0.2, 0.24, 0.32]

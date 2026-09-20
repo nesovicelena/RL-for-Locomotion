@@ -51,9 +51,13 @@ Robots. `cfg.robot` selects the model and the task layout (`ROBOTS`, `LAYOUTS`):
 "go1" (Playground's Go1JoystickFlatTerrain / RoughTerrain), "a1" (our port of
 the same task to Menagerie's Unitree A1, the robot of the paper's blind
 experiment; see envs/a1/), "bh" (Playground's Berkeley Humanoid joystick task;
-see envs/bh/ and docs/humanoid_design.md). The ERFI logic below only needs the
-joint DOFs to follow the six free-base DOFs and the state to hold the joint
-readings in one contiguous block at a known offset.
+see envs/bh/ and docs/humanoid_design.md), "spot" (Playground's Boston Dynamics
+Spot joystick task with our rough scene; see envs/spot/). The ERFI logic below
+only needs the joint DOFs to follow the six free-base DOFs; the policy state is
+assembled from the task's own state where it holds a quantity (`RobotLayout`
+slices) and read from the simulator where it does not (Spot's state carries no
+base linear velocity and no joint velocities; both are then taken from the
+sensors / `qvel` and given the same uniform noise Go1 applies to them).
 
 Torque limits. `cfg.erfi.rfi_lim` / `rao_lim` are either one number (Go1/A1
 studies: 2.5 Nm on every joint) or a per-joint list of `nu` numbers (the
@@ -73,10 +77,12 @@ from mujoco_playground import registry as pg_registry
 from mujoco_playground._src import mjx_env
 from mujoco_playground._src.locomotion import register_environment
 from mujoco_playground._src.locomotion.go1 import joystick
+from mujoco_playground._src.locomotion.spot import joystick as spot_joystick
 
 from rl_locomotion.envs import bh as bh_pkg
 from rl_locomotion.envs.a1 import A1Joystick
 from rl_locomotion.envs.bh import BerkeleyHumanoidJoystick
+from rl_locomotion.envs.spot import SpotJoystick
 
 ENV_NAME = "Go1JoystickERFI"
 MODES = ("rfi", "rao", "erfi_c", "erfi_50")
@@ -103,6 +109,8 @@ class RobotLayout:
     playground_env    Playground env name per task, for the domain randomizer and
                       the tuned PPO config
     base_config       the task's own default_config()
+    gravity_slice, gyro_slice, linvel_slice, joint_vel_from_data, clip_targets,
+    randomizer_env    see the field comments below
     """
 
     joint_pos_start: int
@@ -110,12 +118,27 @@ class RobotLayout:
     push_key: str
     playground_env: dict[str, str]
     base_config: Callable[[], config_dict.ConfigDict]
+    # Where the base readings sit in the task's state. `linvel_slice=None` and
+    # `joint_vel_from_data=True` mean the task does not observe them and the
+    # mixin reads them from the simulator instead (with `cfg.erfi_obs_noise`).
+    gravity_slice: tuple[int, int] = (6, 9)
+    gyro_slice: tuple[int, int] = (3, 6)
+    linvel_slice: tuple[int, int] | None = (0, 3)
+    joint_vel_from_data: bool = False
+    # The task clips motor targets to the actuator range (Spot); the v3 history
+    # then has to use the clipped target, or q* - q is wrong past the range.
+    clip_targets: bool = False
+    # Playground env whose domain randomizer the `dr` condition borrows when
+    # the task has none of its own (Spot uses Go1's: same index conventions).
+    randomizer_env: str | None = None
 
 
 # Robot models. Same rule as the terrain: part of the config, recorded per run.
 #   go1  Unitree Go1, 12.74 kg, limits 23.7 Nm hip/thigh, 35.55 Nm knee
 #   a1   Unitree A1, 12.45 kg, limit 33.5 Nm on all joints (the paper's blind robot)
 #   bh   Berkeley Humanoid, 16.06 kg, 12 joints, joint clamps 5-30 Nm (envs/bh/)
+#   spot Boston Dynamics Spot, 50.34 kg, 12 joints, no actuator force clamp,
+#        Kp 300 / Kd 1 (+ kv 20 in the actuator), action_scale 0.3 (envs/spot/)
 _GO1_LAYOUT = RobotLayout(
     # Go1 state: linvel 0:3 | gyro 3:6 | gravity 6:9 | joints 9:21 | joint_vel 21:33
     # | last_act 33:45 | command 45:48
@@ -140,6 +163,25 @@ LAYOUTS: dict[str, RobotLayout] = {
             "rough_terrain": "BerkeleyHumanoidJoystickRoughTerrain",
         },
         base_config=bh_pkg.default_config,
+    ),
+    # Spot state: gyro 0:3 | gravity 3:6 | joints 6:18 | qpos error history | feet
+    # pos 12 | last_act 12 | command 3. No base linvel and no joint velocities in
+    # the state, so both come from the simulator. Only a flat Playground task
+    # exists; the rough scene is ours (envs/spot/), so both tasks map to the
+    # flat entry for the PPO config. Playground has no Spot randomizer; Go1's
+    # applies (floor geom 0, torso body 1, DOFs 6:, checked in tests/test_spot.py).
+    "spot": RobotLayout(
+        joint_pos_start=6,
+        phase_dim=0,
+        push_key="pert_config",
+        playground_env={"flat_terrain": "SpotFlatTerrainJoystick", "rough_terrain": "SpotFlatTerrainJoystick"},
+        base_config=spot_joystick.default_config,
+        gravity_slice=(3, 6),
+        gyro_slice=(0, 3),
+        linvel_slice=None,
+        joint_vel_from_data=True,
+        clip_targets=True,
+        randomizer_env="Go1JoystickFlatTerrain",
     ),
 }
 ROBOTS = tuple(LAYOUTS)
@@ -217,6 +259,17 @@ def default_config(robot: str = "go1") -> config_dict.ConfigDict:
         # (docs/humanoid_design.md 8.1). Set the scale to 0 to drop the term.
         rfi_lim: Any = list(bh_pkg.PROVISIONAL_TORQUE_LIMIT)
         rao_lim: Any = list(bh_pkg.PROVISIONAL_TORQUE_LIMIT)
+    elif robot == "spot":
+        # PROVISIONAL, for smoke and timing runs only. Spot is 4x Go1's mass and
+        # runs Kp 300, so Go1's 2.5 Nm would shift a joint by 0.5 deg. The study's
+        # limit is measured from a walking `none` policy (0.5 x RMS actuator force,
+        # scripts/measure_stance_torque.py; runpod/run_spot_limits.sh) and written
+        # into the spot configs, as was done for the humanoid.
+        rfi_lim, rao_lim = 10.0, 10.0
+        # Spot's task does not observe base linear velocity or joint velocities,
+        # so the mixin reads them from the simulator. These are Go1's noise
+        # scales for the same quantities, so the sensor model matches Go1/A1.
+        cfg.erfi_obs_noise = config_dict.create(linvel=0.1, joint_vel=1.5)
     else:
         # Nm. The paper uses 20 Nm on the 50 kg ANYmal C, about half a joint's
         # stance torque. Go1 and A1 are both ~12.5 kg, so the study uses 2.5 Nm
@@ -497,22 +550,46 @@ class _ERFIMixin:
 
     # ----------------------------------------------------------- observation
 
-    def _obs_extra_args(self, data: Any) -> tuple:
+    def _obs_extra_args(self, data: Any, info: dict[str, Any]) -> tuple:
         """Extra positional arguments the base task's `_get_obs` takes (none for Go1)."""
-        del data
+        del data, info
         return ()
+
+    def _obs_noise(self, info: dict[str, Any], key: str, n: int) -> jax.Array:
+        """Uniform noise for a quantity the task does not observe itself (`cfg.erfi_obs_noise`)."""
+        scales = self._config.get("erfi_obs_noise", None)
+        scale = float(scales[key]) if scales is not None and key in scales else 0.0
+        if scale == 0.0:
+            return jp.zeros(n)
+        info["rng"], k = jax.random.split(info["rng"])
+        return (2.0 * jax.random.uniform(k, (n,)) - 1.0) * scale
 
     def _get_obs(self, data: Any, info: dict[str, Any], *args: Any) -> dict[str, jax.Array]:
         obs = super()._get_obs(data, info, *args)
         pg = obs["state"]
-        joint_pos, joint_vel = pg[self._joint_pos_slice], pg[self._joint_vel_slice]
+        layout = self._layout
+        nu = self.mjx_model.nu
+        joint_pos = pg[self._joint_pos_slice]
+        if layout.joint_vel_from_data:
+            joint_vel = data.qvel[self._joint_dof_start :] + self._obs_noise(info, "joint_vel", nu)
+        else:
+            joint_vel = pg[self._joint_vel_slice]
+        if layout.linvel_slice is None:
+            linvel = self.get_local_linvel(data) + self._obs_noise(info, "linvel", 3)
+        else:
+            linvel = pg[slice(*layout.linvel_slice)]
         if self._config.get("history_target_error", False):
             # q* - q = (q_default + a * scale) - q = a * scale - (q - q_default).
             # `applied_act` is the action of the step being observed; zeros at
             # reset, where ctrl is the keyframe pose.
-            nu = self.mjx_model.nu
             applied = info.get("applied_act", jp.zeros(nu))
-            joint_pos = applied * self._config.action_scale - joint_pos
+            target = applied * self._config.action_scale
+            if layout.clip_targets:
+                # The task clips its motor targets to the actuator range; use the
+                # target the PD controller actually holds.
+                default = jp.asarray(self._default_pose)
+                target = jp.clip(default + target, self._lowers, self._uppers) - default
+            joint_pos = target - joint_pos
 
         H = self._config.history_len
         if "joint_pos_hist" not in info:  # first call, from reset()
@@ -525,9 +602,9 @@ class _ERFIMixin:
             info["joint_vel_hist"] = jp.roll(info["joint_vel_hist"], 1, axis=0).at[0].set(joint_vel)
 
         parts = [
-            pg[6:9],  # gravity in body frame (orientation, yaw-free)
-            pg[0:3],  # base linear velocity
-            pg[3:6],  # gyro
+            pg[slice(*layout.gravity_slice)],  # gravity in body frame (orientation, yaw-free)
+            linvel,  # base linear velocity
+            pg[slice(*layout.gyro_slice)],  # gyro
             info["joint_pos_hist"].ravel(),
             info["joint_vel_hist"].ravel(),
             info["last_act"],
@@ -564,7 +641,7 @@ class _ERFIMixin:
             # The history is already filled with the current reading, so the
             # roll inside _get_obs leaves it unchanged; only the critic's extra
             # entries change.
-            obs = self._get_obs(state.data, state.info, *self._obs_extra_args(state.data))
+            obs = self._get_obs(state.data, state.info, *self._obs_extra_args(state.data, state.info))
             state = state.replace(obs=obs)
         return state
 
@@ -663,9 +740,10 @@ class BerkeleyHumanoidJoystickERFI(_ERFIMixin, BerkeleyHumanoidJoystick):
         feet_vel = data.sensordata[self._foot_linvel_sensor_adr]  # (2, 3)
         return jp.sum(jp.linalg.norm(feet_vel[..., :2], axis=-1) * contact)
 
-    def _obs_extra_args(self, data: Any) -> tuple:
+    def _obs_extra_args(self, data: Any, info: dict[str, Any]) -> tuple:
         # Berkeley's `_get_obs(data, info, contact)` takes the foot-contact
         # flags; recompute them from the same sensors its reset/step use.
+        del info
         contact = jp.array([
             data.sensordata[self._mj_model.sensor_adr[sensor_id]] > 0
             for sensor_id in self._feet_floor_found_sensor
@@ -673,7 +751,23 @@ class BerkeleyHumanoidJoystickERFI(_ERFIMixin, BerkeleyHumanoidJoystick):
         return (contact,)
 
 
-ENV_CLASSES = {"go1": Go1JoystickERFI, "a1": A1JoystickERFI, "bh": BerkeleyHumanoidJoystickERFI}
+class SpotJoystickERFI(_ERFIMixin, SpotJoystick):
+    """Boston Dynamics Spot joystick with ERFI torque perturbations and a history observation.
+
+    The task's own reward, gains and fall criterion (tilt beyond ~32 deg) are kept
+    whole; the policy input is the mixin's 192-dim state as on the other robots.
+    """
+
+    ROBOT = "spot"
+
+    def _obs_extra_args(self, data: Any, info: dict[str, Any]) -> tuple:
+        # Spot's `_get_obs(data, info, rng)` draws its own sensor noise from `rng`.
+        del data
+        info["rng"], k = jax.random.split(info["rng"])
+        return (k,)
+
+
+ENV_CLASSES = {"go1": Go1JoystickERFI, "a1": A1JoystickERFI, "bh": BerkeleyHumanoidJoystickERFI, "spot": SpotJoystickERFI}
 
 
 def register() -> None:
@@ -698,10 +792,17 @@ def load(config: config_dict.ConfigDict | None = None, **config_overrides: Any):
 def domain_randomizer(task: str = "flat_terrain", robot: str = "go1"):
     """Playground's dynamics randomizer for the robot's task; the `dr` condition uses it.
 
-    Go1 and A1 share Go1's function: it works by index (geom 0 = floor, body 1 =
-    trunk, dofs 6: = the 12 joints), and both scenes satisfy that layout
-    (verified in tests). The Berkeley Humanoid has its own function with the
+    Go1, A1 and Spot share Go1's function: it works by index (geom 0 = floor,
+    body 1 = trunk, dofs 6: = the 12 joints), and all three scenes satisfy that
+    layout (verified in tests). Spot has no Playground randomizer of its own, so
+    its layout names Go1's (`randomizer_env`); note Go1's +-1 kg torso jitter is
+    +-3 % of Spot's 32.9 kg torso against +-19 % on Go1. The Berkeley Humanoid has its own function with the
     same index conventions but different terms (torso mass +-1 kg and rest-pose
     jitter instead of a CoM jitter); see docs/humanoid_design.md 2.1.
     """
-    return pg_registry.get_domain_randomizer(playground_env_name(robot, task))
+    layout = LAYOUTS[robot]
+    name = layout.randomizer_env or playground_env_name(robot, task)
+    fn = pg_registry.get_domain_randomizer(name)
+    if fn is None:
+        raise ValueError(f"no domain randomizer for {robot!r} (looked up {name!r})")
+    return fn
