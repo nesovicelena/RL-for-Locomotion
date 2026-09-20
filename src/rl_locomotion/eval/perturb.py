@@ -303,7 +303,7 @@ def nominal_start(env: Any, state: Any) -> Any:
     info = dict(state.info)
     info.pop("joint_pos_hist", None)
     info.pop("joint_vel_hist", None)
-    obs = env._get_obs(data, info, *env._obs_extra_args(data))
+    obs = env._get_obs(data, info, *env._obs_extra_args(data, info))
     return state.replace(data=data, obs=obs, info=info)
 
 
