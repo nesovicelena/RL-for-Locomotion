@@ -39,6 +39,11 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO}"
 
+# Leave Warp room outside XLA's pool. JAX preallocates 75 % of the GPU by
+# default, which is fine on 48 GB and not on 24 GB (RTX 4090: OOM in Brax's
+# evaluator after a dozen ppo.train calls). 0.6 costs nothing on either.
+export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.6}"
+
 STUDY="${STUDY:?set STUDY=flat|rough|curr}"
 case "${STUDY}" in
     flat)  CFG_NAME=erfi_study_spot_v3;       DIR=erfi_study_spot_v3;       CURR=0 ;;
@@ -97,10 +102,24 @@ fi
 if [ "${SKIP_TRAIN:-0}" != "1" ]; then
     t0=$(date +%s); note "---- 1 train + protocol: ${CFG_NAME}"
     if [ "${CURR}" = "1" ]; then
-        python scripts/train_curriculum.py --config "${CFG}" >> "${LOGS}/${CFG_NAME}.log" 2>&1
-        rc=$?
-        if [ ${rc} -eq 0 ]; then
+        # One (condition, seed) per Python process. All 18 runs x 4 stages in one
+        # process ran out of GPU memory on a 24 GB card after 16 ppo.train calls
+        # (JAX keeps every compiled executable; Warp allocates outside XLA's
+        # pool). A fresh process per run resets both; finished stages are
+        # skipped, so this resumes exactly where a crash left off.
+        rc=0
+        for cond in none dr rfi rao erfi_c erfi_50; do
+            for seed in 0 1 2; do
+                if [ -d "${ROOT}/${DIR}/${cond}/seed${seed}/params_final" ]; then continue; fi
+                note "     curriculum ${cond} seed ${seed}"
+                python scripts/train_curriculum.py --config "${CFG}" --conditions "${cond}" --seeds "${seed}" \
+                    >> "${LOGS}/${CFG_NAME}.log" 2>&1 || { rc=$?; note "FAIL curriculum ${cond} seed ${seed} exited ${rc}"; }
+            done
+        done
+        if [ "$(count_finished "${DIR}")" = "18" ]; then
             python scripts/eval.py --config "${CFG}" --n-episodes "${N_EPISODES}" --plot >> "${LOGS}/${CFG_NAME}.log" 2>&1; rc=$?
+        else
+            rc=1
         fi
     else
         STUDIES="${CFG_NAME}" bash runpod/run_all_studies.sh > "${LOGS}/spot_${STUDY}_train.log" 2>&1; rc=$?
@@ -110,6 +129,10 @@ if [ "${SKIP_TRAIN:-0}" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------- 2 terrain suites
+if [ "$(count_finished "${DIR}")" != "18" ]; then
+    note "SKIP 2 terrain suites: only $(count_finished "${DIR}")/18 policies finished. Re-run this command to resume training."
+    SKIP_TERRAIN=1
+fi
 if [ "${SKIP_TERRAIN:-0}" != "1" ]; then
     t0=$(date +%s); note "---- 2 terrain suites on ${DIR}"
     python scripts/eval_terrain.py --studies "${DIR}" --n-episodes "${N_EPISODES}" >> "${LOGS}/spot_${STUDY}_terrain.log" 2>&1
