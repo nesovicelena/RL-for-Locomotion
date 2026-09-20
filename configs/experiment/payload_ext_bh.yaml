@@ -1,0 +1,33 @@
+# Extended payload sweep for the Berkeley Humanoid studies (erfi_study_bh,
+# erfi_study_bh_rough, erfi_study_curr_bh), the biped counterpart of
+# payload_ext.yaml. Same idea: added next to a finished study's protocol,
+# never touching its results.csv. The humanoid protocol stops at 20 % of the
+# 16.06 kg total mass and every walking policy scores ~1.0 there, so the axis
+# says nothing yet. Fractions of total mass, resolved against the model; the
+# grid stops at 1.0 because a biped carries far less than a quadruped: the
+# smoke below shows every policy on the floor from 0.8 of its mass.
+#
+# Both humanoid-specific protocol settings are kept, otherwise the numbers are
+# not comparable with the study's own payload column:
+#   low_base_fraction 0.5  kneeling counts as a fall (feet-only collision)
+#   nominal_reset          every episode starts from the keyframe pose at rest
+#
+#   python scripts/eval.py --config configs/experiment/payload_ext_bh.yaml \
+#       --runs <RL_EXPERIMENTS_DIR>/erfi_study_bh_rough --suffix payload_ext --plot
+
+name: payload_ext_bh
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  params: [payload_kg]
+  level_fractions:
+    # Smoke on erfi_study_bh_rough (5 episodes): erfi_c/seed0 holds 0.60 at 0.3, 0.40 at
+    # 0.6, falls always from 0.8; none/seed0 holds 0.3, falls from 0.6. The cliff is
+    # 0.3-0.8, so the grid resolves it in 0.1 steps and keeps 1.0 as the floor.
+    payload_kg: [0.0, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0]
+  low_base_fraction: 0.5
+  nominal_reset: true

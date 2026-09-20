@@ -1,0 +1,26 @@
+# Extended payload sweep, added on top of a finished study's protocol without
+# touching its results.csv. The protocol's payload axis (Go1's 0-6 kg, up to
+# 47 % of the robot's mass as fractions) saturates at 1.0 for every walking
+# policy; the paper's Fig. 5a goes to 2.4 x the base mass before the baseline
+# fails. These levels are fractions of the robot's total mass, resolved against
+# the model at evaluation time (Go1 12.74 kg: 7.6 .. 25.5 kg; Spot 50.3 kg:
+# 30 .. 101 kg). Level 0.0 is repeated so the nominal row and the walking
+# filter of the plotting code keep working.
+#
+#   python scripts/eval.py --config configs/experiment/payload_ext.yaml \
+#       --runs <RL_EXPERIMENTS_DIR>/erfi_study_v3_l2.5 --suffix payload_ext --plot
+#
+# -> <runs>/results_payload_ext.csv, summary_success_rate_payload_ext.csv,
+#    *_curves_payload_ext.png. Evaluated runs are skipped on a re-run.
+
+name: payload_ext
+
+eval:
+  impl: jax
+  n_episodes: 50
+  duration_s: 8.0
+  success_distance_m: 2.5
+  command: [0.5, 0.0, 0.0]
+  params: [payload_kg]
+  level_fractions:
+    payload_kg: [0.0, 0.6, 0.8, 1.0, 1.25, 1.5, 2.0]

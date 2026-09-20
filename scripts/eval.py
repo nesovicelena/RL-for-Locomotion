@@ -69,6 +69,8 @@ def parse_args() -> argparse.Namespace:
                    help="evaluate on this robot's model instead of the training one (zero-shot transfer)")
     p.add_argument("--terrain-amplitude", type=float, help="heightfield relief in m (rough terrain), default 0.05")
     p.add_argument("--seed", type=int, default=0, help="seed for the evaluation episodes")
+    p.add_argument("--suffix", default="", help="extra tag for the output files, e.g. payload_ext -> results_payload_ext.csv; "
+                   "use for a sweep that must not touch the study's results.csv")
     p.add_argument("--plot", action="store_true")
     p.add_argument("--force", action="store_true")
     return p.parse_args()
@@ -101,6 +103,8 @@ def main() -> None:
     if args.terrain_amplitude is not None:
         overrides["terrain_amplitude"] = args.terrain_amplitude
         suffix += f"_a{args.terrain_amplitude:.3f}"
+    if args.suffix:
+        suffix += f"_{args.suffix.strip('_')}"
     spec = perturb.EvalSpec(**ev)
 
     root = Path(args.runs or cfg.get("out", "erfi_study"))

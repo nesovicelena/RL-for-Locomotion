@@ -48,6 +48,18 @@ def best_run(study: Path) -> Path:
     return study / score.index[0]
 
 
+def parse_schedule(entries: list[str]) -> list[tuple[float, tuple[float, float, float]]]:
+    """`["5:0.5,0,0", "5:0.5,0,0.8"]` -> `[(5.0, (0.5, 0, 0)), (5.0, (0.5, 0, 0.8))]`."""
+    segments = []
+    for entry in entries:
+        secs, sep, command = entry.partition(":")
+        values = [float(v) for v in command.split(",")] if sep else []
+        if len(values) != 3:
+            raise SystemExit(f"bad schedule segment {entry!r}; expected SEC:VX,VY,WZ (e.g. 5:0.5,0,0.8)")
+        segments.append((float(secs), (values[0], values[1], values[2])))
+    return segments
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src = p.add_mutually_exclusive_group(required=True)
@@ -55,6 +67,10 @@ def parse_args() -> argparse.Namespace:
     src.add_argument("--study", type=Path, help="study directory with results.csv; picks its best run")
     p.add_argument("--command", type=float, nargs=3, default=(0.5, 0.0, 0.0), metavar=("VX", "VY", "WZ"))
     p.add_argument("--seconds", type=float, default=10.0)
+    p.add_argument("--schedule", nargs="+", metavar="SEC:VX,VY,WZ",
+                   help="command schedule instead of one fixed command; overrides --command and "
+                        "--seconds. E.g. turn left then right: "
+                        "--schedule 5:0.5,0,0 5:0.5,0,0.8 5:0.5,0,-0.8")
     p.add_argument("--camera", default="track", help="track | side | top | back (Go1/A1 scene cameras)")
     p.add_argument("--width", type=int, default=960)
     p.add_argument("--height", type=int, default=540)
@@ -84,21 +100,32 @@ def main() -> None:
     cfg = perturb.eval_env_config(ppo.load_env_config(run, **overrides), impl="jax")
     env = erfi.load(cfg)
     policy = ppo.load_policy(run, env, checkpoint=args.checkpoint)
+    # One fixed command, or a schedule of (duration, command) segments.
+    segments = parse_schedule(args.schedule) if args.schedule else [(args.seconds, tuple(args.command))]
+    total_s = sum(secs for secs, _ in segments)
     print(f"run {run}\nrobot {env.robot}  task {env.task}  relief {env.terrain_amplitude:.3f} m  "
-          f"command {tuple(args.command)}  {args.seconds:g} s")
+          f"{total_s:g} s")
+    for secs, c in segments:
+        print(f"  {secs:5.1f} s  command {c}")
 
-    command = jp.array(args.command, dtype=jp.float32)
-    n_steps = int(round(args.seconds / env.dt))
+    n_steps = int(round(total_s / env.dt))
+    # Per-step command, so a segment boundary lands on a control step.
+    per_step: list[tuple[float, float, float]] = []
+    for secs, c in segments:
+        per_step += [c] * int(round(secs / env.dt))
+    per_step = (per_step + [segments[-1][1]] * n_steps)[:n_steps]
+    commands = jp.array(per_step, dtype=jp.float32)
+
     reset, step = jax.jit(env.reset), jax.jit(env.step)
     state = reset(jax.random.PRNGKey(args.seed))
-    state.info["command"] = command
+    state.info["command"] = commands[0]
     key = jax.random.PRNGKey(1)
     states, fell = [state], False
     for t in range(n_steps):
         key, k = jax.random.split(key)
         action, _ = policy(state.obs, k)
         state = step(state, action)
-        state.info["command"] = command  # hold the command; the env would resample it
+        state.info["command"] = commands[t]  # hold it; the env would resample it
         states.append(state)
         if float(state.done) > 0 and not fell:
             fell = True
@@ -124,6 +151,8 @@ def main() -> None:
             suffix += f"_{args.terrain_shape}"
         if args.slope_deg is not None:
             suffix += f"_{args.slope_deg:g}deg"
+        if args.schedule:
+            suffix += "_schedule"
         args.out = REPO / "experiments" / "videos" / f"{study}_{run.parent.name}_{run.name}{suffix}.mp4"
     args.out.parent.mkdir(parents=True, exist_ok=True)
     media.write_video(str(args.out), frames, fps=fps)
